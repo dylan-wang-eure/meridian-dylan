@@ -57,6 +57,8 @@ class ModelDiagnosticsTest(parameterized.TestCase):
     cls.meridian = mock.create_autospec(
         model.Meridian, instance=True, input_data=cls.input_data
     )
+    cls.meridian.input_data.kpi_type = c.REVENUE
+    cls.meridian.input_data.revenue_per_kpi = None
     inference_data = az.InferenceData()
     inference_data.prior = xr.open_dataset(
         os.path.join(_TEST_DATA_DIR, "sample_prior_media_and_rf.nc")
@@ -76,18 +78,26 @@ class ModelDiagnosticsTest(parameterized.TestCase):
     cls.model_diagnostics = visualizer.ModelDiagnostics(cls.meridian)
 
   def test_predictive_accuracy_called_correctly(self):
+    self.mock_analyzer_method.reset_mock()
     self.model_diagnostics.predictive_accuracy_table()
-    self.mock_analyzer_method.assert_called_once()
+    self.mock_analyzer_method.assert_called_once_with(
+        selected_geos=None,
+        selected_times=None,
+        use_kpi=True,
+        batch_size=c.DEFAULT_BATCH_SIZE,
+    )
 
   def test_predictive_accuracy_selected_geos_times_called_correctly(self):
+    self.mock_analyzer_method.reset_mock()
     self.model_diagnostics.predictive_accuracy_table(
         selected_geos=["geo 1", "geo 2"],
         selected_times=["2021-02-22", "2021-03-01"],
     )
-    self.mock_analyzer_method.assert_called_with(
+    self.mock_analyzer_method.assert_called_once_with(
         selected_geos=["geo 1", "geo 2"],
         selected_times=["2021-02-22", "2021-03-01"],
-        batch_size=100,
+        use_kpi=True,
+        batch_size=c.DEFAULT_BATCH_SIZE,
     )
 
   @parameterized.named_parameters(
@@ -691,6 +701,13 @@ class ReachAndFrequencyTest(parameterized.TestCase):
     cls.input_data = mock.create_autospec(input_data.InputData, instance=True)
     cls.meridian = mock.create_autospec(
         model.Meridian, instance=True, input_data=cls.input_data
+    )
+    cls.enter_context(
+        mock.patch.object(
+            analyzer.Analyzer,
+            "_use_kpi",
+            return_value=False,
+        )
     )
     cls.mock_optimal_frequency_data = (
         test_utils.generate_optimal_frequency_data()
@@ -1685,9 +1702,12 @@ class MediaSummaryTest(parameterized.TestCase):
     )
 
   def test_media_summary_summary_table_format_monetary(self):
-    df = self.media_summary_revenue.summary_table()
-    self.assertTrue(all("$" in dollar for dollar in df[c.SPEND]))
-    self.assertTrue(all("$" in pct for pct in df[summary_text.INC_OUTCOME_COL]))
+    currency = "₽"
+    df = self.media_summary_revenue.summary_table(currency=currency)
+    self.assertTrue(all(currency in dollar for dollar in df[c.SPEND]))
+    self.assertTrue(
+        all(currency in pct for pct in df[summary_text.INC_OUTCOME_COL])
+    )
 
   def test_media_summary_summary_table_format_credible_interval(self):
     df = self.media_summary_revenue.summary_table()

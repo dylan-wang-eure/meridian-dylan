@@ -389,7 +389,7 @@ class AKSTest(parameterized.TestCase):
               ),
               "non_revenue",
           ),
-          expected_knots=[38, 39, 41, 48, 50, 55],
+          expected_knots=[11, 14, 38, 39, 41, 43, 45, 48, 50, 55, 87, 89, 90],
       ),
       dict(
           testcase_name="national_geos",
@@ -403,7 +403,61 @@ class AKSTest(parameterized.TestCase):
               ),
               "non_revenue",
           ),
-          expected_knots=[1, 5, 6, 21, 38, 39, 53, 54, 64, 83],
+          expected_knots=[
+              1,
+              2,
+              3,
+              5,
+              6,
+              15,
+              16,
+              19,
+              20,
+              21,
+              24,
+              25,
+              27,
+              28,
+              30,
+              33,
+              35,
+              38,
+              39,
+              42,
+              43,
+              44,
+              47,
+              53,
+              54,
+              59,
+              60,
+              64,
+              65,
+              66,
+              67,
+              68,
+              72,
+              73,
+              74,
+              78,
+              79,
+              81,
+              83,
+              85,
+              87,
+              89,
+              90,
+              91,
+              93,
+              95,
+              96,
+              98,
+              99,
+              102,
+              103,
+              104,
+              114,
+          ],
       ),
       dict(
           testcase_name="5_geos",
@@ -417,7 +471,26 @@ class AKSTest(parameterized.TestCase):
               ),
               "non_revenue",
           ),
-          expected_knots=[4, 41, 50, 54, 59],
+          expected_knots=[
+              4,
+              17,
+              20,
+              27,
+              28,
+              31,
+              32,
+              33,
+              41,
+              42,
+              50,
+              54,
+              59,
+              61,
+              76,
+              77,
+              78,
+              81,
+          ],
       ),
       dict(
           testcase_name="50_geos",
@@ -431,7 +504,7 @@ class AKSTest(parameterized.TestCase):
               ),
               "non_revenue",
           ),
-          expected_knots=[114],
+          expected_knots=[2, 7, 24, 25, 38, 39, 49, 114],
       ),
       dict(
           testcase_name="50_times",
@@ -445,7 +518,7 @@ class AKSTest(parameterized.TestCase):
               ),
               "non_revenue",
           ),
-          expected_knots=[1],
+          expected_knots=[1, 5, 13, 15, 16, 23, 27, 31, 32, 38, 42],
       ),
       dict(
           testcase_name="200_times",
@@ -459,7 +532,54 @@ class AKSTest(parameterized.TestCase):
               ),
               "non_revenue",
           ),
-          expected_knots=[195, 196, 197],
+          expected_knots=[
+              4,
+              10,
+              12,
+              19,
+              20,
+              22,
+              29,
+              30,
+              33,
+              34,
+              35,
+              42,
+              43,
+              48,
+              49,
+              57,
+              58,
+              61,
+              63,
+              65,
+              66,
+              73,
+              77,
+              78,
+              83,
+              84,
+              105,
+              106,
+              107,
+              111,
+              121,
+              134,
+              135,
+              138,
+              143,
+              151,
+              157,
+              159,
+              160,
+              166,
+              173,
+              175,
+              179,
+              195,
+              196,
+              197,
+          ],
       ),
       dict(
           testcase_name="flat_kpi",
@@ -489,7 +609,27 @@ class AKSTest(parameterized.TestCase):
               ),
               "non_revenue",
           ),
-          expected_knots=[1],
+          expected_knots=[
+              1,
+              4,
+              5,
+              9,
+              10,
+              14,
+              16,
+              17,
+              21,
+              22,
+              29,
+              30,
+              33,
+              35,
+              36,
+              40,
+              41,
+              45,
+              47,
+          ],
       ),
       dict(
           testcase_name="peak",
@@ -527,6 +667,28 @@ class AKSTest(parameterized.TestCase):
     actual_knots, actual_model = aks_result.knots, aks_result.model
     self.assertListEqual(actual_knots.tolist(), expected_knots)
     self.assertIsNotNone(actual_model)
+
+  def test_aks_no_input_data_raises(self):
+    with self.assertRaisesWithLiteralMatch(
+        ValueError,
+        "If enable_aks is true then input data must be provided.",
+    ):
+      knots.get_knot_info(n_times=200, knots=None, enable_aks=True)
+
+  def test_aks_returns_correct_knot_info(self):
+    data, expected_knot_info = (
+        test_utils.sample_input_data_for_aks_with_expected_knot_info()
+    )
+    actual_knot_info = knots.get_knot_info(
+        n_times=117, knots=None, enable_aks=True, data=data
+    )
+    self.assertEqual(actual_knot_info.n_knots, expected_knot_info.n_knots)
+    np.testing.assert_equal(
+        actual_knot_info.knot_locations, expected_knot_info.knot_locations
+    )
+    np.testing.assert_equal(
+        actual_knot_info.weights, expected_knot_info.weights
+    )
 
   def test_aspline(self):
     x = np.array([0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15])
@@ -601,6 +763,121 @@ class AKSTest(parameterized.TestCase):
       knots.AKS(mock.MagicMock()).aspline(
           x, y, np.array([1.0, 3, 15]), np.array([-10, 50, 0])
       )
+
+  def test_user_provided_base_penalty(self):
+    data = test_utils.sample_input_data_from_dataset(
+        test_utils.random_dataset(
+            n_geos=50,
+            n_times=117,
+            n_media_times=117,
+            n_controls=2,
+            n_media_channels=5,
+        ),
+        "non_revenue",
+    )
+    aks_obj = knots.AKS(data)
+    base_penalty = np.array([0.5] * 100)
+    aks_result = aks_obj.automatic_knot_selection(base_penalty=base_penalty)
+    actual_knots, _ = aks_result.knots, aks_result.model
+    self.assertListEqual(
+        actual_knots.tolist(),
+        [
+            2,
+            7,
+            8,
+            10,
+            11,
+            14,
+            15,
+            16,
+            17,
+            21,
+            22,
+            24,
+            25,
+            26,
+            30,
+            31,
+            34,
+            35,
+            36,
+            38,
+            39,
+            40,
+            42,
+            43,
+            45,
+            49,
+            52,
+            54,
+            57,
+            60,
+            61,
+            64,
+            67,
+            68,
+            69,
+            72,
+            73,
+            74,
+            79,
+            81,
+            83,
+            84,
+            85,
+            86,
+            89,
+            93,
+            94,
+            95,
+            98,
+            101,
+            102,
+            103,
+            104,
+            105,
+            107,
+            109,
+            110,
+            113,
+            114,
+        ],
+    )
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="min_equals_max",
+          min_internal_knots=8,
+          max_internal_knots=8,
+          expected_knots=[2, 7, 24, 25, 38, 39, 49, 114],
+      ),
+      dict(
+          testcase_name="min_lt_max_",
+          min_internal_knots=2,
+          max_internal_knots=15,
+          expected_knots=[2, 7, 24, 25, 38, 39, 49, 114],
+      ),
+  )
+  def test_aks_user_provided_min_max_internal_knots(
+      self, min_internal_knots, max_internal_knots, expected_knots
+  ):
+    data = test_utils.sample_input_data_from_dataset(
+        test_utils.random_dataset(
+            n_geos=50,
+            n_times=117,
+            n_media_times=117,
+            n_controls=2,
+            n_media_channels=5,
+        ),
+        "non_revenue",
+    )
+    aks_obj = knots.AKS(data)
+    aks_result = aks_obj.automatic_knot_selection(
+        min_internal_knots=min_internal_knots,
+        max_internal_knots=max_internal_knots,
+    )
+    actual_knots, _ = aks_result.knots, aks_result.model
+    self.assertListEqual(actual_knots.tolist(), expected_knots)
 
 
 if __name__ == "__main__":

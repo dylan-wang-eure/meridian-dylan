@@ -20,6 +20,7 @@ import os
 
 import jinja2
 from meridian import constants as c
+from meridian.analysis import analyzer
 from meridian.analysis import formatter
 from meridian.analysis import summary_text
 from meridian.analysis import visualizer
@@ -59,17 +60,18 @@ RESPONSE_CURVES_CARD_SPEC = formatter.CardSpec(
 class Summarizer:
   """Generates HTML summary visualizations from the model fitting."""
 
-  def __init__(self, meridian: model.Meridian):
+  def __init__(self, meridian: model.Meridian, use_kpi: bool = False):
     """Initialize the visualizer classes that are not time-dependent."""
     self._meridian = meridian
+    self._use_kpi = analyzer.Analyzer(meridian)._use_kpi(use_kpi)
 
   @functools.cached_property
   def _model_fit(self):
-    return visualizer.ModelFit(self._meridian)
+    return visualizer.ModelFit(self._meridian, use_kpi=self._use_kpi)
 
   @functools.cached_property
   def _model_diagnostics(self):
-    return visualizer.ModelDiagnostics(self._meridian)
+    return visualizer.ModelDiagnostics(self._meridian, use_kpi=self._use_kpi)
 
   def output_model_results_summary(
       self,
@@ -153,12 +155,14 @@ class Summarizer:
   ) -> Sequence[str]:
     """Creates the HTML snippets for cards in the summary page."""
     media_summary = visualizer.MediaSummary(
-        self._meridian, selected_times=selected_times
+        self._meridian, selected_times=selected_times, use_kpi=self._use_kpi
     )
-    media_effects = visualizer.MediaEffects(self._meridian)
+    media_effects = visualizer.MediaEffects(
+        self._meridian, use_kpi=self._use_kpi
+    )
     reach_frequency = (
         visualizer.ReachAndFrequency(
-            self._meridian, selected_times=selected_times
+            self._meridian, selected_times=selected_times, use_kpi=self._use_kpi
         )
         if self._meridian.n_rf_channels > 0
         else None
@@ -168,7 +172,9 @@ class Summarizer:
             template_env, selected_times=selected_times
         ),
         self._create_outcome_contrib_card_html(
-            template_env, media_summary, selected_times=selected_times
+            template_env,
+            media_summary,
+            selected_times=selected_times,
         ),
         self._create_performance_breakdown_card_html(
             template_env, media_summary
@@ -525,8 +531,4 @@ class Summarizer:
     ).optimal_frequency
 
   def _kpi_or_revenue(self) -> str:
-    if self._meridian.input_data.revenue_per_kpi is not None:
-      outcome_str = c.REVENUE
-    else:
-      outcome_str = c.KPI.upper()
-    return outcome_str
+    return c.KPI.upper() if self._use_kpi else c.REVENUE

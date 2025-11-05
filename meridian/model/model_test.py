@@ -15,6 +15,7 @@
 from collections.abc import Collection, Mapping, Sequence
 import dataclasses
 import os
+from typing import Any
 from unittest import mock
 import warnings
 from absl import flags
@@ -32,20 +33,23 @@ from meridian.model import model
 from meridian.model import model_test_data
 from meridian.model import prior_distribution
 from meridian.model import spec
+from meridian.model.eda import eda_engine
+from meridian.model.eda import eda_spec as eda_spec_module
 import numpy as np
 import xarray as xr
 
 
 class ModelTest(
-    parameterized.TestCase,
+    test_utils.MeridianTestCase,
     model_test_data.WithInputDataSamples,
 ):
 
   input_data_samples = model_test_data.WithInputDataSamples
 
-  def setUp(self):
-    super().setUp()
-    model_test_data.WithInputDataSamples.setup(self)
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    model_test_data.WithInputDataSamples.setup()
 
   @parameterized.named_parameters(
       dict(
@@ -231,7 +235,11 @@ class ModelTest(
           model_spec=spec.ModelSpec(knots=knots),
       ).knot_info
       mock_get_knot_info.assert_called_once_with(
-          self._N_TIMES, knots, is_national
+          self._N_TIMES,
+          knots,
+          False,
+          data,
+          is_national,
       )
 
   def test_validate_media_prior_type_mroi(self):
@@ -295,40 +303,30 @@ class ModelTest(
   @parameterized.named_parameters(
       dict(
           testcase_name="roi_m",
-          prior_dist=prior_distribution.PriorDistribution(
-              roi_m=backend.tfd.Normal(
-                  [0.1, 0.2, 0.3, 0.4, 0.5, 0.6], 0.9, name=constants.ROI_M
-              )
-          ),
+          dist_args=([0.1, 0.2, 0.3, 0.4, 0.5, 0.6], 0.9),
           dist_name=constants.ROI_M,
       ),
       dict(
           testcase_name="roi_rf",
-          prior_dist=prior_distribution.PriorDistribution(
-              roi_rf=backend.tfd.Normal(0.0, 0.9, name=constants.ROI_RF)
-          ),
+          dist_args=(0.0, 0.9),
           dist_name=constants.ROI_RF,
       ),
       dict(
           testcase_name="mroi_m",
-          prior_dist=prior_distribution.PriorDistribution(
-              mroi_m=backend.tfd.Normal(0.5, 0.9, name=constants.MROI_M)
-          ),
+          dist_args=(0.5, 0.9),
           dist_name=constants.MROI_M,
       ),
       dict(
           testcase_name="mroi_rf",
-          prior_dist=prior_distribution.PriorDistribution(
-              mroi_rf=backend.tfd.Normal(
-                  [0.0, 0.0, 0.0, 0.0], 0.9, name=constants.MROI_RF
-              )
-          ),
+          dist_args=([0.0, 0.0, 0.0, 0.0], 0.9),
           dist_name=constants.MROI_RF,
       ),
   )
   def test_check_for_negative_effect(
-      self, prior_dist: prior_distribution.PriorDistribution, dist_name: str
+      self, dist_args: tuple[list[float] | float, float], dist_name: str
   ):
+    dist = backend.tfd.Normal(*dist_args, name=dist_name)
+    prior_dist = prior_distribution.PriorDistribution(**{dist_name: dist})
     with self.assertRaisesWithLiteralMatch(
         ValueError,
         "Media priors must have non-negative support when"
@@ -344,16 +342,15 @@ class ModelTest(
       )
 
   def test_custom_priors_not_passed_in_ok(self):
+    data = self.input_data_non_revenue_no_revenue_per_kpi
     meridian = model.Meridian(
-        input_data=self.input_data_non_revenue_no_revenue_per_kpi,
+        input_data=data,
         model_spec=spec.ModelSpec(
             media_prior_type=constants.TREATMENT_PRIOR_TYPE_COEFFICIENT
         ),
     )
     # Compare input data.
-    self.assertEqual(
-        meridian.input_data, self.input_data_non_revenue_no_revenue_per_kpi
-    )
+    self.assertEqual(meridian.input_data, data)
 
     # Create sample model spec for comparison
     sample_spec = spec.ModelSpec(
@@ -364,20 +361,19 @@ class ModelTest(
     self.assertEqual(repr(meridian.model_spec), repr(sample_spec))
 
   def test_custom_priors_okay_with_array_params(self):
-    my_prior = prior_distribution.PriorDistribution(
+    prior = prior_distribution.PriorDistribution(
         roi_m=backend.tfd.LogNormal([1, 1], [1, 1])
     )
+    data = self.input_data_non_revenue_no_revenue_per_kpi
     meridian = model.Meridian(
-        input_data=self.input_data_non_revenue_no_revenue_per_kpi,
-        model_spec=spec.ModelSpec(prior=my_prior),
+        input_data=data,
+        model_spec=spec.ModelSpec(prior=prior),
     )
     # Compare input data.
-    self.assertEqual(
-        meridian.input_data, self.input_data_non_revenue_no_revenue_per_kpi
-    )
+    self.assertEqual(meridian.input_data, data)
 
     # Create sample model spec for comparison
-    sample_spec = spec.ModelSpec(prior=my_prior)
+    sample_spec = spec.ModelSpec(prior=prior)
 
     # Compare model spec.
     self.assertEqual(repr(meridian.model_spec), repr(sample_spec))
@@ -397,10 +393,11 @@ class ModelTest(
         ).knot_info
 
   def test_init_with_default_parameters_works(self):
-    meridian = model.Meridian(input_data=self.input_data_with_media_only)
+    data = self.input_data_with_media_only
+    meridian = model.Meridian(input_data=data)
 
     # Compare input data.
-    self.assertEqual(meridian.input_data, self.input_data_with_media_only)
+    self.assertEqual(meridian.input_data, data)
 
     # Create sample model spec for comparison
     sample_spec = spec.ModelSpec()
@@ -408,11 +405,40 @@ class ModelTest(
     # Compare model spec.
     self.assertEqual(repr(meridian.model_spec), repr(sample_spec))
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="with_default_spec",
+          eda_spec_kwargs={},
+          expected_eda_spec=eda_spec_module.EDASpec(),
+      ),
+      dict(
+          testcase_name="with_custom_spec",
+          eda_spec_kwargs={
+              "eda_spec": eda_spec_module.EDASpec(
+                  vif_spec=eda_spec_module.VIFSpec(geo_threshold=500.0)
+              )
+          },
+          expected_eda_spec=eda_spec_module.EDASpec(
+              vif_spec=eda_spec_module.VIFSpec(geo_threshold=500.0)
+          ),
+      ),
+  )
+  def test_eda_engine_and_spec_initialization(
+      self, eda_spec_kwargs, expected_eda_spec
+  ):
+    meridian = model.Meridian(
+        input_data=self.input_data_with_media_only, **eda_spec_kwargs
+    )
+
+    self.assertIsInstance(meridian.eda_engine, eda_engine.EDAEngine)
+    self.assertEqual(meridian.eda_spec, expected_eda_spec)
+
   def test_init_with_default_national_parameters_works(self):
-    meridian = model.Meridian(input_data=self.national_input_data_media_only)
+    data = self.national_input_data_media_only
+    meridian = model.Meridian(input_data=data)
 
     # Compare input data.
-    self.assertEqual(meridian.input_data, self.national_input_data_media_only)
+    self.assertEqual(meridian.input_data, data)
 
     # Create sample model spec for comparison
     expected_spec = spec.ModelSpec()
@@ -481,10 +507,12 @@ class ModelTest(
   @parameterized.named_parameters(
       dict(
           testcase_name="custom_beta_m_prior_type_roi",
-          custom_distributions={
-              constants.BETA_M: backend.tfd.LogNormal(
-                  0.2, 0.8, name=constants.BETA_M
-              )
+          custom_dist_kwargs={
+              constants.BETA_M: {
+                  "loc": 0.2,
+                  "scale": 0.8,
+                  "name": constants.BETA_M,
+              }
           },
           ignored_priors="beta_m",
           media_prior_type=constants.TREATMENT_PRIOR_TYPE_ROI,
@@ -494,13 +522,17 @@ class ModelTest(
       ),
       dict(
           testcase_name="custom_mroi_rf_prior_type_roi",
-          custom_distributions={
-              constants.MROI_M: backend.tfd.LogNormal(
-                  0.2, 0.8, name=constants.MROI_M
-              ),
-              constants.MROI_RF: backend.tfd.LogNormal(
-                  0.2, 0.8, name=constants.MROI_RF
-              ),
+          custom_dist_kwargs={
+              constants.MROI_M: {
+                  "loc": 0.2,
+                  "scale": 0.8,
+                  "name": constants.MROI_M,
+              },
+              constants.MROI_RF: {
+                  "loc": 0.2,
+                  "scale": 0.8,
+                  "name": constants.MROI_RF,
+              },
           },
           ignored_priors="mroi_rf",
           media_prior_type=constants.TREATMENT_PRIOR_TYPE_MROI,
@@ -510,16 +542,22 @@ class ModelTest(
       ),
       dict(
           testcase_name="custom_beta_m_roi_m_prior_type_mroi",
-          custom_distributions={
-              constants.BETA_M: backend.tfd.LogNormal(
-                  0.7, 0.9, name=constants.BETA_M
-              ),
-              constants.BETA_RF: backend.tfd.LogNormal(
-                  0.8, 0.9, name=constants.BETA_RF
-              ),
-              constants.ROI_M: backend.tfd.LogNormal(
-                  0.2, 0.1, name=constants.ROI_M
-              ),
+          custom_dist_kwargs={
+              constants.BETA_M: {
+                  "loc": 0.7,
+                  "scale": 0.9,
+                  "name": constants.BETA_M,
+              },
+              constants.BETA_RF: {
+                  "loc": 0.8,
+                  "scale": 0.9,
+                  "name": constants.BETA_RF,
+              },
+              constants.ROI_M: {
+                  "loc": 0.2,
+                  "scale": 0.1,
+                  "name": constants.ROI_M,
+              },
           },
           ignored_priors="beta_m, roi_m",
           media_prior_type=constants.TREATMENT_PRIOR_TYPE_MROI,
@@ -529,10 +567,12 @@ class ModelTest(
       ),
       dict(
           testcase_name="custom_roi_rf_prior_type_coefficient",
-          custom_distributions={
-              constants.ROI_RF: backend.tfd.LogNormal(
-                  0.2, 0.1, name=constants.ROI_RF
-              )
+          custom_dist_kwargs={
+              constants.ROI_RF: {
+                  "loc": 0.2,
+                  "scale": 0.1,
+                  "name": constants.ROI_RF,
+              }
           },
           ignored_priors="roi_rf",
           media_prior_type=constants.TREATMENT_PRIOR_TYPE_COEFFICIENT,
@@ -543,13 +583,17 @@ class ModelTest(
   )
   def test_warn_setting_ignored_priors(
       self,
-      custom_distributions: Mapping[str, backend.tfd.Distribution],
+      custom_dist_kwargs: Mapping[str, Mapping[str, Any]],
       ignored_priors: str,
       media_prior_type: str,
       rf_prior_type: str,
       wrong_prior_type_var_name: str,
       wrong_prior_type: str,
   ):
+    custom_distributions = {
+        name: backend.tfd.LogNormal(**kwargs)
+        for name, kwargs in custom_dist_kwargs.items()
+    }
     # Create prior distribution with given parameters.
     distribution = prior_distribution.PriorDistribution(**custom_distributions)
     with warnings.catch_warnings(record=True) as w:
@@ -581,6 +625,7 @@ class ModelTest(
     self.assertFalse(meridian.is_national)
     self.assertIsNotNone(meridian.prior_broadcast)
     self.assertIsNotNone(meridian.inference_data)
+    self.assertIsNotNone(meridian.eda_engine)
     self.assertNotIn(constants.PRIOR, meridian.inference_data.attrs)
     self.assertNotIn(constants.POSTERIOR, meridian.inference_data.attrs)
 
@@ -593,6 +638,7 @@ class ModelTest(
     self.assertTrue(meridian.is_national)
     self.assertIsNotNone(meridian.prior_broadcast)
     self.assertIsNotNone(meridian.inference_data)
+    self.assertIsNotNone(meridian.eda_engine)
     self.assertNotIn(constants.PRIOR, meridian.inference_data.attrs)
     self.assertNotIn(constants.POSTERIOR, meridian.inference_data.attrs)
 
@@ -768,33 +814,28 @@ class ModelTest(
           testcase_name="wrong_controls",
           dataset=data_test_utils.DATASET_WITHOUT_GEO_VARIATION_IN_CONTROLS,
           data_name=constants.CONTROLS,
-          dims_bad=np.array([b"control_0", b"control_1"]),
+          dims_bad=np.array(["control_0", "control_1"]),
       ),
       dict(
           testcase_name="wrong_media",
           dataset=data_test_utils.DATASET_WITHOUT_GEO_VARIATION_IN_MEDIA,
           data_name=constants.MEDIA,
-          dims_bad=np.array([b"media_channel_1", b"media_channel_2"]),
+          dims_bad=np.array(["media_channel_1", "media_channel_2"]),
       ),
       dict(
           testcase_name="wrong_rf",
           dataset=data_test_utils.DATASET_WITHOUT_GEO_VARIATION_IN_REACH,
           data_name=constants.REACH,
-          dims_bad=np.array([b"rf_channel_0", b"rf_channel_1"]),
+          dims_bad=np.array(["rf_channel_0", "rf_channel_1"]),
       ),
   )
   def test_init_without_geo_variation_fails(
       self, dataset: xr.Dataset, data_name: str, dims_bad: Sequence[str]
   ):
-    with self.assertRaisesWithLiteralMatch(
+    with self.assertRaisesRegex(
         ValueError,
-        f"The following {data_name} variables do not vary across geos, making a"
-        f" model with n_knots=n_time unidentifiable: {dims_bad}. This can lead"
-        " to poor model convergence. Since these variables only vary across"
-        " time and not across geo, they are collinear with time and redundant"
-        " in a model with a parameter for each time period.  To address this,"
-        " you can either: (1) decrease the number of knots (n_knots < n_time),"
-        " or (2) drop the listed variables that do not vary across geos.",
+        f"The following {data_name} variables do not vary across geos.*"
+        f"{'.*'.join(dims_bad)}",
     ):
       model.Meridian(
           input_data=data_test_utils.sample_input_data_from_dataset(
@@ -807,50 +848,46 @@ class ModelTest(
           testcase_name="wrong_controls",
           dataset=data_test_utils.DATASET_WITHOUT_TIME_VARIATION_IN_CONTROLS,
           data_name=constants.CONTROLS,
-          dims_bad=np.array([b"control_0", b"control_1"]),
+          dims_bad=np.array(["control_0", "control_1"]),
       ),
       dict(
           testcase_name="wrong_non_media_treatments",
           dataset=data_test_utils.DATASET_WITHOUT_TIME_VARIATION_IN_NON_MEDIA_TREATMENTS,
           data_name=constants.NON_MEDIA_TREATMENTS,
-          dims_bad=np.array([b"non_media_channel_0", b"non_media_channel_1"]),
+          dims_bad=np.array(["non_media_channel_0", "non_media_channel_1"]),
       ),
       dict(
           testcase_name="wrong_media",
           dataset=data_test_utils.DATASET_WITHOUT_TIME_VARIATION_IN_MEDIA,
           data_name=constants.MEDIA,
-          dims_bad=np.array([b"media_channel_1", b"media_channel_2"]),
+          dims_bad=np.array(["media_channel_1", "media_channel_2"]),
       ),
       dict(
           testcase_name="wrong_rf",
           dataset=data_test_utils.DATASET_WITHOUT_TIME_VARIATION_IN_REACH,
           data_name=constants.REACH,
-          dims_bad=np.array([b"rf_channel_0", b"rf_channel_1"]),
+          dims_bad=np.array(["rf_channel_0", "rf_channel_1"]),
       ),
       dict(
           testcase_name="wrong_organic_media",
           dataset=data_test_utils.DATASET_WITHOUT_TIME_VARIATION_IN_ORGANIC_MEDIA,
           data_name=constants.ORGANIC_MEDIA,
-          dims_bad=np.array([b"organic_media_channel_0"]),
+          dims_bad=np.array(["organic_media_channel_0"]),
       ),
       dict(
           testcase_name="wrong_organic_rf",
           dataset=data_test_utils.DATASET_WITHOUT_TIME_VARIATION_IN_ORGANIC_REACH,
           data_name=constants.ORGANIC_REACH,
-          dims_bad=np.array([b"organic_rf_channel_1"]),
+          dims_bad=np.array(["organic_rf_channel_1"]),
       ),
   )
   def test_init_without_time_variation_fails(
       self, dataset: xr.Dataset, data_name: str, dims_bad: Sequence[str]
   ):
-    with self.assertRaisesWithLiteralMatch(
+    with self.assertRaisesRegex(
         ValueError,
-        f"The following {data_name} variables do not vary across time, making"
-        f" a model with geo main effects unidentifiable: {dims_bad}. This can"
-        " lead to poor model convergence. Since these variables only vary"
-        " across geo and not across time, they are collinear with geo and"
-        " redundant in a model with geo main effects. To address this, drop"
-        " the listed variables that do not vary across time.",
+        f"The following {data_name} variables do not vary across time.*"
+        f"{'.*'.join(dims_bad)}",
     ):
       model.Meridian(
           input_data=data_test_utils.sample_input_data_from_dataset(
@@ -863,49 +900,47 @@ class ModelTest(
           testcase_name="wrong_controls",
           dataset=data_test_utils.DATASET_WITHOUT_TIME_VARIATION_IN_CONTROLS,
           data_name=constants.CONTROLS,
-          dims_bad=np.array([b"control_0", b"control_1"]),
+          dims_bad=np.array(["control_0", "control_1"]),
       ),
       dict(
           testcase_name="wrong_non_media_treatments",
           dataset=data_test_utils.DATASET_WITHOUT_TIME_VARIATION_IN_NON_MEDIA_TREATMENTS,
           data_name=constants.NON_MEDIA_TREATMENTS,
-          dims_bad=np.array([b"non_media_channel_0", b"non_media_channel_1"]),
+          dims_bad=np.array(["non_media_channel_0", "non_media_channel_1"]),
       ),
       dict(
           testcase_name="wrong_media",
           dataset=data_test_utils.DATASET_WITHOUT_TIME_VARIATION_IN_MEDIA,
           data_name=constants.MEDIA,
-          dims_bad=np.array([b"media_channel_1", b"media_channel_2"]),
+          dims_bad=np.array(["media_channel_1", "media_channel_2"]),
       ),
       dict(
           testcase_name="wrong_rf",
           dataset=data_test_utils.DATASET_WITHOUT_TIME_VARIATION_IN_REACH,
           data_name=constants.REACH,
-          dims_bad=np.array([b"rf_channel_0", b"rf_channel_1"]),
+          dims_bad=np.array(["rf_channel_0", "rf_channel_1"]),
       ),
       dict(
           testcase_name="wrong_organic_media",
           dataset=data_test_utils.DATASET_WITHOUT_TIME_VARIATION_IN_ORGANIC_MEDIA,
           data_name=constants.ORGANIC_MEDIA,
-          dims_bad=np.array([b"organic_media_channel_0"]),
+          dims_bad=np.array(["organic_media_channel_0"]),
       ),
       dict(
           testcase_name="wrong_organic_rf",
           dataset=data_test_utils.DATASET_WITHOUT_TIME_VARIATION_IN_ORGANIC_REACH,
           data_name=constants.ORGANIC_REACH,
-          dims_bad=np.array([b"organic_rf_channel_1"]),
+          dims_bad=np.array(["organic_rf_channel_1"]),
       ),
   )
   def test_init_without_time_variation_national_model_fails(
       self, dataset: xr.Dataset, data_name: str, dims_bad: Sequence[str]
   ):
     national_dataset = dataset.sel(geo=["geo_0"])
-    with self.assertRaisesWithLiteralMatch(
+    with self.assertRaisesRegex(
         ValueError,
-        f"The following {data_name} variables do not vary across time, which is"
-        f" equivalent to no signal at all in a national model: {dims_bad}. "
-        " This can lead to poor model convergence. To address this, drop the"
-        " listed variables that do not vary across time.",
+        f"The following {data_name} variables do not vary across time.*"
+        f"{'.*'.join(dims_bad)}",
     ):
       model.Meridian(
           input_data=data_test_utils.sample_input_data_from_dataset(
@@ -1149,6 +1184,24 @@ class ModelTest(
     )
     self.assertIsNotNone(meridian)
 
+  @parameterized.named_parameters(
+      dict(testcase_name="geo", is_national=False),
+      dict(testcase_name="national", is_national=True),
+  )
+  def test_validate_kpi_transformer_with_kpi_variability(
+      self, is_national: bool
+  ):
+    valid_input_data = (
+        self.national_input_data_non_media_and_organic
+        if is_national
+        else self.input_data_non_media_and_organic
+    )
+    meridian = model.Meridian(
+        input_data=valid_input_data,
+        model_spec=spec.ModelSpec(),
+    )
+    self.assertIsNotNone(meridian)
+
   def test_broadcast_prior_distribution_compute_property(self):
     meridian = model.Meridian(input_data=self.input_data_with_media_and_rf)
     # Validate `tau_g_excl_baseline` distribution.
@@ -1250,16 +1303,15 @@ class ModelTest(
   def test_default_roi_prior_distribution_raises_warning(
       self,
   ):
+    data = self.input_data_non_revenue_no_revenue_per_kpi
     with warnings.catch_warnings(record=True) as warns:
       # Cause all warnings to always be triggered.
       warnings.simplefilter("always")
 
-      meridian = model.Meridian(
-          input_data=self.input_data_non_revenue_no_revenue_per_kpi,
-      )
+      meridian = model.Meridian(input_data=data)
 
       _ = meridian.prior_broadcast
-      self.assertLen(warns, 1)
+      self.assertLen(warns, 1, f"warns: {[w.message for w in warns]}")
       for w in warns:
         self.assertTrue(issubclass(w.category, UserWarning))
         self.assertIn(
@@ -1273,7 +1325,8 @@ class ModelTest(
 
   def test_scaled_data_shape(self):
     controls = self.input_data_with_media_and_rf.controls
-    meridian = model.Meridian(input_data=self.input_data_with_media_and_rf)
+    data = self.input_data_with_media_and_rf
+    meridian = model.Meridian(input_data=data)
     self.assertIsNotNone(controls)
     test_utils.assert_allequal(
         meridian.controls_scaled.shape,  # pytype: disable=attribute-error
@@ -1285,7 +1338,7 @@ class ModelTest(
     )
     test_utils.assert_allequal(
         meridian.kpi_scaled.shape,
-        self.input_data_with_media_and_rf.kpi.shape,
+        data.kpi.shape,
         err_msg=(
             "Shape of `_kpi_scaled` does not match the shape of"
             " `kpi` from the input data."
@@ -1293,16 +1346,16 @@ class ModelTest(
     )
 
   def test_scaled_data_no_controls(self):
-    meridian = model.Meridian(
-        input_data=self.input_data_with_media_and_rf_no_controls
-    )
+    data = self.input_data_with_media_and_rf_no_controls
+    meridian = model.Meridian(input_data=data)
+
     self.assertEqual(meridian.n_controls, 0)
     self.assertIsNone(meridian.controls)
     self.assertIsNone(meridian.controls_transformer)
     self.assertIsNone(meridian.controls_scaled)
     test_utils.assert_allequal(
         meridian.kpi_scaled.shape,
-        self.input_data_with_media_and_rf.kpi.shape,
+        data.kpi.shape,
         err_msg=(
             "Shape of `_kpi_scaled` does not match the shape of"
             " `kpi` from the input data."
@@ -1310,14 +1363,13 @@ class ModelTest(
     )
 
   def test_population_scaled_conrols_transformer_set(self):
+    data = self.input_data_with_media_and_rf
     model_spec = spec.ModelSpec(
         control_population_scaling_id=backend.to_tensor(
-            [True for _ in self.input_data_with_media_and_rf.control_variable]
+            [True for _ in data.control_variable]
         )
     )
-    meridian = model.Meridian(
-        input_data=self.input_data_with_media_and_rf, model_spec=model_spec
-    )
+    meridian = model.Meridian(input_data=data, model_spec=model_spec)
     self.assertIsNotNone(meridian.controls_transformer)
     self.assertIsNotNone(
         meridian.controls_transformer._population_scaling_factors,  # pytype: disable=attribute-error
@@ -1328,10 +1380,7 @@ class ModelTest(
     )
     test_utils.assert_allequal(
         meridian.controls_transformer._population_scaling_factors.shape,  # pytype: disable=attribute-error
-        [
-            len(self.input_data_with_media_and_rf.geo),
-            len(self.input_data_with_media_and_rf.control_variable),
-        ],
+        [len(data.geo), len(data.control_variable)],
         err_msg=(
             "Shape of `controls_transformer._population_scaling_factors` does"
             " not match (`n_geos`, `n_controls`)."
@@ -1339,19 +1388,20 @@ class ModelTest(
     )
 
   def test_scaled_data_inverse_is_identity(self):
-    meridian = model.Meridian(input_data=self.input_data_with_media_and_rf)
+    data = self.input_data_with_media_and_rf
+    meridian = model.Meridian(input_data=data)
 
     # With the default tolerance of eps * 10 the test fails due to rounding
     # errors.
     atol = np.finfo(np.float32).eps * 100
     test_utils.assert_allclose(
         meridian.controls_transformer.inverse(meridian.controls_scaled),  # pytype: disable=attribute-error
-        self.input_data_with_media_and_rf.controls,
+        data.controls,
         atol=atol,
     )
     test_utils.assert_allclose(
         meridian.kpi_transformer.inverse(meridian.kpi_scaled),
-        self.input_data_with_media_and_rf.kpi,
+        data.kpi,
         atol=atol,
     )
 
@@ -1363,7 +1413,8 @@ class ModelTest(
   def test_baseline_geo_idx(
       self, baseline_geo: int | str | None, expected_idx: int
   ):
-    self.input_data_with_media_only.population.data = [
+    data = self.input_data_with_media_only
+    data.population.data = [
         2.0,
         5.0,
         20.0,
@@ -1371,7 +1422,7 @@ class ModelTest(
         10.0,
     ]
     meridian = model.Meridian(
-        input_data=self.input_data_with_media_only,
+        input_data=data,
         model_spec=spec.ModelSpec(baseline_geo=baseline_geo),
     )
     self.assertEqual(meridian.baseline_geo_idx, expected_idx)
@@ -1412,17 +1463,17 @@ class ModelTest(
           alpha=np.ones(shape=(self._N_MEDIA_CHANNELS,)),
           ec=np.ones(shape=(self._N_MEDIA_CHANNELS,)),
           slope=np.ones(shape=(self._N_MEDIA_CHANNELS,)),
+          decay_functions=meridian.adstock_decay_spec.media,
       )
 
   def test_adstock_hill_media_n_times_output(self):
     with mock.patch.object(
         adstock_hill, "AdstockTransformer", autosepc=True
     ) as mock_adstock_cls:
-      mock_adstock_cls.return_value.forward.return_value = (
-          self.input_data_with_media_only.media
-      )
+      data = self.input_data_with_media_only
+      mock_adstock_cls.return_value.forward.return_value = data.media
       meridian = model.Meridian(
-          input_data=self.input_data_with_media_only,
+          input_data=data,
           model_spec=spec.ModelSpec(),
       )
       meridian.adstock_hill_media(
@@ -1430,6 +1481,7 @@ class ModelTest(
           alpha=np.ones(shape=(self._N_MEDIA_CHANNELS,)),
           ec=np.ones(shape=(self._N_MEDIA_CHANNELS,)),
           slope=np.ones(shape=(self._N_MEDIA_CHANNELS,)),
+          decay_functions=meridian.adstock_decay_spec.media,
           n_times_output=8,
       )
 
@@ -1455,12 +1507,13 @@ class ModelTest(
       hill_before_adstock,
       expected_called_names,
   ):
+    data = self.input_data_with_media_only
     mock_hill = self.enter_context(
         mock.patch.object(
             adstock_hill.HillTransformer,
             "forward",
             autospec=True,
-            return_value=self.input_data_with_media_only.media,
+            return_value=data.media,
         )
     )
     mock_adstock = self.enter_context(
@@ -1468,7 +1521,7 @@ class ModelTest(
             adstock_hill.AdstockTransformer,
             "forward",
             autospec=True,
-            return_value=self.input_data_with_media_only.media,
+            return_value=data.media,
         )
     )
     manager = mock.Mock()
@@ -1476,7 +1529,7 @@ class ModelTest(
     manager.attach_mock(mock_hill, "mock_hill")
 
     meridian = model.Meridian(
-        input_data=self.input_data_with_media_only,
+        input_data=data,
         model_spec=spec.ModelSpec(
             hill_before_adstock=hill_before_adstock,
         ),
@@ -1486,6 +1539,7 @@ class ModelTest(
         alpha=np.ones(shape=(self._N_MEDIA_CHANNELS,)),
         ec=np.ones(shape=(self._N_MEDIA_CHANNELS,)),
         slope=np.ones(shape=(self._N_MEDIA_CHANNELS,)),
+        decay_functions=meridian.adstock_decay_spec.media,
     )
 
     mock_hill.assert_called_once()
@@ -1510,17 +1564,17 @@ class ModelTest(
           alpha=np.ones(shape=(self._N_RF_CHANNELS,)),
           ec=np.ones(shape=(self._N_RF_CHANNELS,)),
           slope=np.ones(shape=(self._N_RF_CHANNELS,)),
+          decay_functions=meridian.adstock_decay_spec.rf,
       )
 
   def test_adstock_hill_rf_n_times_output(self):
     with mock.patch.object(
         adstock_hill, "AdstockTransformer", autosepc=True
     ) as mock_adstock_cls:
-      mock_adstock_cls.return_value.forward.return_value = (
-          self.input_data_with_media_and_rf.media
-      )
+      data = self.input_data_with_media_and_rf
+      mock_adstock_cls.return_value.forward.return_value = data.media
       meridian = model.Meridian(
-          input_data=self.input_data_with_media_and_rf,
+          input_data=data,
           model_spec=spec.ModelSpec(),
       )
       meridian.adstock_hill_rf(
@@ -1529,6 +1583,7 @@ class ModelTest(
           alpha=np.ones(shape=(self._N_RF_CHANNELS,)),
           ec=np.ones(shape=(self._N_RF_CHANNELS,)),
           slope=np.ones(shape=(self._N_RF_CHANNELS,)),
+          decay_functions=meridian.adstock_decay_spec.rf,
           n_times_output=8,
       )
 
@@ -1540,12 +1595,13 @@ class ModelTest(
   def test_adstock_hill_rf(
       self,
   ):
+    data = self.input_data_with_media_and_rf
     mock_hill = self.enter_context(
         mock.patch.object(
             adstock_hill.HillTransformer,
             "forward",
             autospec=True,
-            return_value=self.input_data_with_media_and_rf.frequency,
+            return_value=data.frequency,
         )
     )
     mock_adstock = self.enter_context(
@@ -1553,8 +1609,7 @@ class ModelTest(
             adstock_hill.AdstockTransformer,
             "forward",
             autospec=True,
-            return_value=self.input_data_with_media_and_rf.reach
-            * self.input_data_with_media_and_rf.frequency,
+            return_value=data.reach * data.frequency,
         )
     )
     manager = mock.Mock()
@@ -1562,7 +1617,7 @@ class ModelTest(
     manager.attach_mock(mock_hill, "mock_hill")
 
     meridian = model.Meridian(
-        input_data=self.input_data_with_media_and_rf,
+        input_data=data,
         model_spec=spec.ModelSpec(),
     )
     meridian.adstock_hill_rf(
@@ -1571,6 +1626,7 @@ class ModelTest(
         alpha=np.ones(shape=(self._N_RF_CHANNELS,)),
         ec=np.ones(shape=(self._N_RF_CHANNELS,)),
         slope=np.ones(shape=(self._N_RF_CHANNELS,)),
+        decay_functions=meridian.adstock_decay_spec.rf,
     )
 
     expected_called_names = ["mock_hill", "mock_adstock"]
@@ -1608,17 +1664,19 @@ class ModelTest(
 
 
 class NonPaidModelTest(
-    parameterized.TestCase,
+    test_utils.MeridianTestCase,
     model_test_data.WithInputDataSamples,
 ):
 
   input_data_samples = model_test_data.WithInputDataSamples
 
-  def setUp(self):
-    super().setUp()
-    model_test_data.WithInputDataSamples.setup(self)
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    model_test_data.WithInputDataSamples.setup()
 
   def test_init_with_wrong_non_media_population_scaling_id_shape_fails(self):
+    data = self.input_data_non_media_and_organic
     model_spec = spec.ModelSpec(
         non_media_population_scaling_id=np.ones((7), dtype=bool)
     )
@@ -1628,12 +1686,13 @@ class NonPaidModelTest(
         " `(n_non_media_channels,) = (2,)`.",
     ):
       model.Meridian(
-          input_data=self.input_data_non_media_and_organic,
+          input_data=data,
           model_spec=model_spec,
       )
 
   def test_base_geo_properties(self):
-    meridian = model.Meridian(input_data=self.input_data_non_media_and_organic)
+    data = self.input_data_non_media_and_organic
+    meridian = model.Meridian(input_data=data)
     self.assertEqual(meridian.n_geos, self._N_GEOS)
     self.assertEqual(meridian.n_controls, self._N_CONTROLS)
     self.assertEqual(meridian.n_non_media_channels, self._N_NON_MEDIA_CHANNELS)
@@ -1642,13 +1701,13 @@ class NonPaidModelTest(
     self.assertFalse(meridian.is_national)
     self.assertIsNotNone(meridian.prior_broadcast)
     self.assertIsNotNone(meridian.inference_data)
+    self.assertIsNotNone(meridian.eda_engine)
     self.assertNotIn(constants.PRIOR, meridian.inference_data.attrs)
     self.assertNotIn(constants.POSTERIOR, meridian.inference_data.attrs)
 
   def test_base_national_properties(self):
-    meridian = model.Meridian(
-        input_data=self.national_input_data_non_media_and_organic
-    )
+    data = self.national_input_data_non_media_and_organic
+    meridian = model.Meridian(input_data=data)
     self.assertEqual(meridian.n_geos, self._N_GEOS_NATIONAL)
     self.assertEqual(meridian.n_controls, self._N_CONTROLS)
     self.assertEqual(meridian.n_non_media_channels, self._N_NON_MEDIA_CHANNELS)
@@ -1657,6 +1716,7 @@ class NonPaidModelTest(
     self.assertTrue(meridian.is_national)
     self.assertIsNotNone(meridian.prior_broadcast)
     self.assertIsNotNone(meridian.inference_data)
+    self.assertIsNotNone(meridian.eda_engine)
     self.assertNotIn(constants.PRIOR, meridian.inference_data.attrs)
     self.assertNotIn(constants.POSTERIOR, meridian.inference_data.attrs)
 
@@ -1775,7 +1835,8 @@ class NonPaidModelTest(
       )
 
   def test_broadcast_prior_distribution_is_called_in_meridian_init(self):
-    meridian = model.Meridian(input_data=self.input_data_non_media_and_organic)
+    data = self.input_data_non_media_and_organic
+    meridian = model.Meridian(input_data=data)
     # Validate `tau_g_excl_baseline` distribution.
     self.assertEqual(
         meridian.prior_broadcast.tau_g_excl_baseline.batch_shape,
@@ -1855,8 +1916,9 @@ class NonPaidModelTest(
     self.assertEqual(meridian.prior_broadcast.sigma.batch_shape, ())
 
   def test_scaled_data_shape(self):
-    controls = self.input_data_non_media_and_organic.controls
-    meridian = model.Meridian(input_data=self.input_data_non_media_and_organic)
+    data = self.input_data_non_media_and_organic
+    controls = data.controls
+    meridian = model.Meridian(input_data=data)
     self.assertIsNotNone(meridian.controls_scaled)
     self.assertIsNotNone(controls)
     test_utils.assert_allequal(
@@ -1868,13 +1930,11 @@ class NonPaidModelTest(
         ),
     )
     self.assertIsNotNone(meridian.non_media_treatments_normalized)
-    self.assertIsNotNone(
-        self.input_data_non_media_and_organic.non_media_treatments
-    )
+    self.assertIsNotNone(data.non_media_treatments)
     # pytype: disable=attribute-error
     test_utils.assert_allequal(
         meridian.non_media_treatments_normalized.shape,
-        self.input_data_non_media_and_organic.non_media_treatments.shape,
+        data.non_media_treatments.shape,
         err_msg=(
             "Shape of `_non_media_treatments_scaled` does not match the shape"
             " of `non_media_treatments` from the input data."
@@ -1883,7 +1943,7 @@ class NonPaidModelTest(
     # pytype: enable=attribute-error
     test_utils.assert_allequal(
         meridian.kpi_scaled.shape,
-        self.input_data_non_media_and_organic.kpi.shape,
+        data.kpi.shape,
         err_msg=(
             "Shape of `_kpi_scaled` does not match the shape of"
             " `kpi` from the input data."
@@ -1891,15 +1951,13 @@ class NonPaidModelTest(
     )
 
   def test_population_scaled_non_media_transformer_set(self):
+    data = self.input_data_non_media_and_organic
     model_spec = spec.ModelSpec(
-        non_media_population_scaling_id=backend.to_tensor([
-            True
-            for _ in self.input_data_non_media_and_organic.non_media_channel
-        ])
+        non_media_population_scaling_id=backend.to_tensor(
+            [True for _ in data.non_media_channel]
+        )
     )
-    meridian = model.Meridian(
-        input_data=self.input_data_non_media_and_organic, model_spec=model_spec
-    )
+    meridian = model.Meridian(input_data=data, model_spec=model_spec)
     self.assertIsNotNone(meridian.non_media_transformer)
     # pytype: disable=attribute-error
     self.assertIsNotNone(
@@ -1912,8 +1970,8 @@ class NonPaidModelTest(
     test_utils.assert_allequal(
         meridian.non_media_transformer._population_scaling_factors.shape,
         [
-            len(self.input_data_non_media_and_organic.geo),
-            len(self.input_data_non_media_and_organic.non_media_channel),
+            len(data.geo),
+            len(data.non_media_channel),
         ],
         err_msg=(
             "Shape of"
@@ -1924,14 +1982,15 @@ class NonPaidModelTest(
     # pytype: enable=attribute-error
 
   def test_scaled_data_inverse_is_identity(self):
-    meridian = model.Meridian(input_data=self.input_data_non_media_and_organic)
+    data = self.input_data_non_media_and_organic
+    meridian = model.Meridian(input_data=data)
 
     # With the default tolerance of eps * 10 the test fails due to rounding
     # errors.
     atol = np.finfo(np.float32).eps * 100
     test_utils.assert_allclose(
         meridian.controls_transformer.inverse(meridian.controls_scaled),  # pytype: disable=attribute-error
-        self.input_data_non_media_and_organic.controls,
+        data.controls,
         atol=atol,
     )
     self.assertIsNotNone(meridian.non_media_transformer)
@@ -1940,13 +1999,13 @@ class NonPaidModelTest(
         meridian.non_media_transformer.inverse(
             meridian.non_media_treatments_normalized
         ),
-        self.input_data_non_media_and_organic.non_media_treatments,
+        data.non_media_treatments,
         atol=atol,
     )
     # pytype: enable=attribute-error
     test_utils.assert_allclose(
         meridian.kpi_transformer.inverse(meridian.kpi_scaled),
-        self.input_data_non_media_and_organic.kpi,
+        data.kpi,
         atol=atol,
     )
 
@@ -1988,7 +2047,7 @@ class NonPaidModelTest(
     )
     sample = (
         meridian.posterior_sampler_callable._get_joint_dist_unpinned().sample(
-            self._N_DRAWS
+            self._N_DRAWS, seed=self.get_next_rng_seed_or_key()
         )
     )
     test_utils.assert_allequal(
@@ -2049,7 +2108,9 @@ class NonPaidModelTest(
 
     # Take a single draw of all parameters from the prior distribution.
     par_structtuple = (
-        meridian.posterior_sampler_callable._get_joint_dist_unpinned().sample(1)
+        meridian.posterior_sampler_callable._get_joint_dist_unpinned().sample(
+            1, seed=self.get_next_rng_seed_or_key()
+        )
     )
     par = par_structtuple._asdict()
 
@@ -2202,6 +2263,7 @@ class NonPaidModelTest(
         alpha=par[constants.ALPHA_M],
         ec=par[constants.EC_M],
         slope=par[constants.SLOPE_M],
+        decay_functions=meridian.adstock_decay_spec.media,
     )[0, :, :, :]
     transformed_reach = meridian.adstock_hill_rf(
         reach=meridian.rf_tensors.reach_scaled,
@@ -2209,12 +2271,14 @@ class NonPaidModelTest(
         alpha=par[constants.ALPHA_RF],
         ec=par[constants.EC_RF],
         slope=par[constants.SLOPE_RF],
+        decay_functions=meridian.adstock_decay_spec.rf,
     )[0, :, :, :]
     transformed_organic_media = meridian.adstock_hill_media(
         media=meridian.organic_media_tensors.organic_media_scaled,
         alpha=par[constants.ALPHA_OM],
         ec=par[constants.EC_OM],
         slope=par[constants.SLOPE_OM],
+        decay_functions=meridian.adstock_decay_spec.organic_media,
     )[0, :, :, :]
     transformed_organic_reach = meridian.adstock_hill_rf(
         reach=meridian.organic_rf_tensors.organic_reach_scaled,
@@ -2222,6 +2286,7 @@ class NonPaidModelTest(
         alpha=par[constants.ALPHA_ORF],
         ec=par[constants.EC_ORF],
         slope=par[constants.SLOPE_ORF],
+        decay_functions=meridian.adstock_decay_spec.organic_rf,
     )[0, :, :, :]
     combined_transformed_media = backend.concatenate(
         [
@@ -2291,9 +2356,10 @@ class NonPaidModelTest(
     )
 
   def test_inference_data_non_paid_correct_dims(self):
+    data = self.input_data_non_media_and_organic
     model_spec = spec.ModelSpec()
     mmm = model.Meridian(
-        input_data=self.input_data_non_media_and_organic,
+        input_data=data,
         model_spec=model_spec,
     )
     n_draws = 7
@@ -2316,9 +2382,10 @@ class NonPaidModelTest(
         self.assertLen(prior_coords[dim], shape_dim)
 
   def test_inference_data_with_unique_sigma_geo_correct_dims(self):
+    data = self.input_data_non_media_and_organic
     model_spec = spec.ModelSpec(unique_sigma_for_each_geo=True)
     mmm = model.Meridian(
-        input_data=self.input_data_non_media_and_organic,
+        input_data=data,
         model_spec=model_spec,
     )
     n_draws = 7
@@ -2342,14 +2409,17 @@ class NonPaidModelTest(
 
   def test_validate_injected_inference_data_correct_shapes(self):
     """Checks validation passes with correct shapes."""
+    data = self.input_data_non_media_and_organic
     model_spec = spec.ModelSpec()
     meridian = model.Meridian(
-        input_data=self.input_data_non_media_and_organic,
+        input_data=data,
         model_spec=model_spec,
     )
     n_chains = 1
     n_draws = 10
-    prior_samples = meridian.prior_sampler_callable._sample_prior(n_draws)
+    prior_samples = meridian.prior_sampler_callable._sample_prior(
+        n_draws, seed=1
+    )
     prior_coords = meridian.create_inference_data_coords(n_chains, n_draws)
     prior_dims = meridian.create_inference_data_dims()
     inference_data = az.convert_to_inference_data(
@@ -2361,7 +2431,7 @@ class NonPaidModelTest(
 
     # This should not raise an error
     meridian_with_inference_data = model.Meridian(
-        input_data=self.input_data_non_media_and_organic,
+        input_data=data,
         model_spec=model_spec,
         inference_data=inference_data,
     )
@@ -2449,12 +2519,15 @@ class NonPaidModelTest(
       self, coord, mismatched_priors, mismatched_coord_size, expected_coord_size
   ):
     """Checks validation fails with incorrect coordinates."""
+    data = self.input_data_non_media_and_organic
     model_spec = spec.ModelSpec()
     meridian = model.Meridian(
-        input_data=self.input_data_non_media_and_organic,
+        input_data=data,
         model_spec=model_spec,
     )
-    prior_samples = meridian.prior_sampler_callable._sample_prior(self._N_DRAWS)
+    prior_samples = meridian.prior_sampler_callable._sample_prior(
+        self._N_DRAWS, seed=1
+    )
     prior_coords = meridian.create_inference_data_coords(1, self._N_DRAWS)
     prior_dims = meridian.create_inference_data_dims()
 
@@ -2578,12 +2651,15 @@ class NonPaidModelTest(
       expected_coord_size,
   ):
     """Checks validation fails with incorrect coordinates for sigma."""
+    data = self.input_data_non_media_and_organic
     model_spec = spec.ModelSpec(unique_sigma_for_each_geo=True)
     meridian = model.Meridian(
-        input_data=self.input_data_non_media_and_organic,
+        input_data=data,
         model_spec=model_spec,
     )
-    prior_samples = meridian.prior_sampler_callable._sample_prior(self._N_DRAWS)
+    prior_samples = meridian.prior_sampler_callable._sample_prior(
+        self._N_DRAWS, seed=1
+    )
     prior_coords = meridian.create_inference_data_coords(1, self._N_DRAWS)
     prior_dims = meridian.create_inference_data_dims()
 
@@ -2609,7 +2685,7 @@ class NonPaidModelTest(
         f" {mismatched_coord_size}",
     ):
       _ = model.Meridian(
-          input_data=self.input_data_non_media_and_organic,
+          input_data=data,
           model_spec=model_spec,
           inference_data=inference_data,
       )
@@ -2617,13 +2693,14 @@ class NonPaidModelTest(
   def test_compute_non_media_treatments_baseline_wrong_baseline_values_shape_raises_exception(
       self,
   ):
+    data = self.input_data_non_media_and_organic
     with self.assertRaisesWithLiteralMatch(
         ValueError,
         "The number of non-media channels (2) does not match the number of"
         " baseline values (3).",
     ):
       mmm = model.Meridian(
-          input_data=self.input_data_non_media_and_organic,
+          input_data=data,
           model_spec=spec.ModelSpec(
               non_media_baseline_values=["min", "max", "min"]
           ),
@@ -2633,13 +2710,14 @@ class NonPaidModelTest(
   def test_compute_non_media_treatments_baseline_fails_with_wrong_baseline_type(
       self,
   ):
+    data = self.input_data_non_media_and_organic
     with self.assertRaisesWithLiteralMatch(
         ValueError,
         "Invalid non_media_baseline_values value: 'wrong'. Only"
         " float numbers and strings 'min' and 'max' are supported.",
     ):
       mmm = model.Meridian(
-          input_data=self.input_data_non_media_and_organic,
+          input_data=data,
           model_spec=spec.ModelSpec(
               non_media_baseline_values=[
                   "max",
@@ -2651,8 +2729,9 @@ class NonPaidModelTest(
 
   def test_compute_non_media_treatments_baseline_default(self):
     """Tests default baseline calculation (all 'min')."""
+    data = self.input_data_non_media_and_organic
     meridian = model.Meridian(
-        input_data=self.input_data_non_media_and_organic,
+        input_data=data,
         model_spec=spec.ModelSpec(non_media_baseline_values=None),
     )
     non_media_treatments = meridian.non_media_treatments
@@ -2662,8 +2741,9 @@ class NonPaidModelTest(
 
   def test_compute_non_media_treatments_baseline_strings(self):
     """Tests baseline calculation with 'min' and 'max' strings."""
+    data = self.input_data_non_media_and_organic
     meridian = model.Meridian(
-        input_data=self.input_data_non_media_and_organic,
+        input_data=data,
         model_spec=spec.ModelSpec(non_media_baseline_values=["min", "max"]),
     )
     non_media_treatments = meridian.non_media_treatments
@@ -2681,32 +2761,272 @@ class NonPaidModelTest(
 
   def test_compute_non_media_treatments_baseline_floats(self):
     """Tests baseline calculation with float values."""
+    data = self.input_data_non_media_and_organic
     baseline_values = [10.5, -2.3]
     meridian = model.Meridian(
-        input_data=self.input_data_non_media_and_organic,
+        input_data=data,
         model_spec=spec.ModelSpec(non_media_baseline_values=baseline_values),
     )
-    expected_baseline = backend.cast(baseline_values, backend.float32)
+    expected_baseline = backend.to_tensor(
+        baseline_values, dtype=backend.float32
+    )
     actual_baseline = meridian.compute_non_media_treatments_baseline()
     test_utils.assert_allclose(expected_baseline, actual_baseline)
 
   def test_compute_non_media_treatments_baseline_mixed(self):
     """Tests baseline calculation with mixed float and string values."""
+    data = self.input_data_non_media_and_organic
     baseline_values = ["min", 5.0]
     meridian = model.Meridian(
-        input_data=self.input_data_non_media_and_organic,
+        input_data=data,
         model_spec=spec.ModelSpec(non_media_baseline_values=baseline_values),
     )
     non_media_treatments = meridian.non_media_treatments
     expected_baseline_min = backend.reduce_min(
         non_media_treatments[..., 0], axis=[0, 1]
     )
-    expected_baseline_float = backend.cast(baseline_values[1], backend.float32)
+    expected_baseline_float = backend.to_tensor(
+        baseline_values[1], dtype=backend.float32
+    )
     expected_baseline = backend.stack(
         [expected_baseline_min, expected_baseline_float], axis=-1
     )
     actual_baseline = meridian.compute_non_media_treatments_baseline()
     test_utils.assert_allclose(expected_baseline, actual_baseline)
+
+  def test_aks_returns_correct_knot_info(self):
+    data, expected_knot_info = (
+        data_test_utils.sample_input_data_for_aks_with_expected_knot_info()
+    )
+    model_spec = spec.ModelSpec(enable_aks=True)
+    actual_knot_info = model.Meridian(
+        input_data=data, model_spec=model_spec
+    ).knot_info
+    self.assertEqual(actual_knot_info.n_knots, expected_knot_info.n_knots)
+    np.testing.assert_equal(
+        actual_knot_info.knot_locations, expected_knot_info.knot_locations
+    )
+    np.testing.assert_equal(
+        actual_knot_info.weights, expected_knot_info.weights
+    )
+
+
+class AdstockDecaySpecFromChannelMappingTest(
+    test_utils.MeridianTestCase,
+):
+
+  @parameterized.product(**data_test_utils.ADSTOCK_DECAY_SPEC_CASES)
+  def test_from_channel(
+      self,
+      media,
+      rf,
+      organic_media,
+      organic_rf,
+  ):
+    """Test if adstock decay functions are explicitly passed for all channels."""
+
+    if not (media or rf):
+      self.skipTest("Invalid test case: Meridian requires paid media.")
+
+    inp_data = data_test_utils.sample_input_data_revenue(
+        n_media_channels=len(media),
+        n_rf_channels=len(rf),
+        n_organic_media_channels=len(organic_media),
+        n_organic_rf_channels=len(organic_rf),
+    )
+
+    decay_spec = media | rf | organic_media | organic_rf
+    model_spec = spec.ModelSpec(adstock_decay_spec=decay_spec)
+    mmm = model.Meridian(input_data=inp_data, model_spec=model_spec)
+
+    expected_media = list(media.values()) or constants.GEOMETRIC_DECAY
+    expected_rf = list(rf.values()) or constants.GEOMETRIC_DECAY
+    expected_organic_media = (
+        list(organic_media.values()) or constants.GEOMETRIC_DECAY
+    )
+    expected_organic_rf = list(organic_rf.values()) or constants.GEOMETRIC_DECAY
+
+    self.assertSequenceEqual(mmm.adstock_decay_spec.media, expected_media)
+    self.assertSequenceEqual(mmm.adstock_decay_spec.rf, expected_rf)
+    self.assertSequenceEqual(
+        mmm.adstock_decay_spec.organic_media, expected_organic_media
+    )
+    self.assertSequenceEqual(
+        mmm.adstock_decay_spec.organic_rf, expected_organic_rf
+    )
+
+  @parameterized.product(
+      **data_test_utils.ADSTOCK_DECAY_SPEC_CASES,
+      has_undefined_media_channel=(True, False),
+      has_undefined_rf_channel=(True, False),
+      has_undefined_organic_media_channel=(True, False),
+      has_undefined_organic_rf_channel=(True, False),
+  )
+  def test_from_channels_some_undefined(
+      self,
+      media,
+      rf,
+      organic_media,
+      organic_rf,
+      has_undefined_media_channel,
+      has_undefined_rf_channel,
+      has_undefined_organic_media_channel,
+      has_undefined_organic_rf_channel,
+  ):
+    """Test if adstock decay functions are not explicitly passed for all channels."""
+    if not (
+        media or rf or has_undefined_media_channel or has_undefined_rf_channel
+    ):
+      self.skipTest("Invalid test case: Meridian requires paid media.")
+
+    if not sum((
+        has_undefined_media_channel,
+        has_undefined_rf_channel,
+        has_undefined_organic_media_channel,
+        has_undefined_organic_rf_channel,
+    )):
+      self.skipTest("Redundant test case: no undefined channels.")
+
+    inp_data = data_test_utils.sample_input_data_revenue(
+        n_media_channels=len(media) + has_undefined_media_channel,
+        n_rf_channels=len(rf) + has_undefined_rf_channel,
+        n_organic_media_channels=len(organic_media)
+        + has_undefined_organic_media_channel,
+        n_organic_rf_channels=len(organic_rf)
+        + has_undefined_organic_rf_channel,
+    )
+
+    decay_spec = media | rf | organic_media | organic_rf
+    model_spec = spec.ModelSpec(adstock_decay_spec=decay_spec)
+    mmm = model.Meridian(input_data=inp_data, model_spec=model_spec)
+
+    if media:
+      expected_media = list(media.values())
+
+      if has_undefined_media_channel:
+        expected_media.append(constants.GEOMETRIC_DECAY)
+    elif has_undefined_media_channel:
+      expected_media = [constants.GEOMETRIC_DECAY]
+    else:
+      expected_media = constants.GEOMETRIC_DECAY
+
+    if rf:
+      expected_rf = list(rf.values())
+
+      if has_undefined_rf_channel:
+        expected_rf.append(constants.GEOMETRIC_DECAY)
+    elif has_undefined_rf_channel:
+      expected_rf = [constants.GEOMETRIC_DECAY]
+    else:
+      expected_rf = constants.GEOMETRIC_DECAY
+
+    if organic_media:
+      expected_organic_media = list(organic_media.values())
+
+      if has_undefined_organic_media_channel:
+        expected_organic_media.append(constants.GEOMETRIC_DECAY)
+    elif has_undefined_organic_media_channel:
+      expected_organic_media = [constants.GEOMETRIC_DECAY]
+    else:
+      expected_organic_media = constants.GEOMETRIC_DECAY
+
+    if organic_rf:
+      expected_organic_rf = list(organic_rf.values())
+
+      if has_undefined_organic_rf_channel:
+        expected_organic_rf.append(constants.GEOMETRIC_DECAY)
+    elif has_undefined_organic_rf_channel:
+      expected_organic_rf = [constants.GEOMETRIC_DECAY]
+    else:
+      expected_organic_rf = constants.GEOMETRIC_DECAY
+
+    self.assertSequenceEqual(mmm.adstock_decay_spec.media, expected_media)
+    self.assertSequenceEqual(mmm.adstock_decay_spec.rf, expected_rf)
+    self.assertSequenceEqual(
+        mmm.adstock_decay_spec.organic_media, expected_organic_media
+    )
+    self.assertSequenceEqual(
+        mmm.adstock_decay_spec.organic_rf, expected_organic_rf
+    )
+
+  @parameterized.product(**data_test_utils.ADSTOCK_DECAY_SPEC_CASES)
+  def test_from_channel_explicit_media_name(
+      self,
+      media,
+      rf,
+      organic_media,
+      organic_rf,
+  ):
+    """Test if one media channel has the name "media"."""
+
+    if not (media or rf):
+      self.skipTest("Invalid test case: Meridian requires paid media.")
+
+    media = media | {"media": constants.BINOMIAL_DECAY}
+
+    inp_data = data_test_utils.sample_input_data_revenue(
+        n_media_channels=len(media),
+        n_rf_channels=len(rf),
+        n_organic_media_channels=len(organic_media),
+        n_organic_rf_channels=len(organic_rf),
+        explicit_media_channel_names=list(media.keys()),
+    )
+
+    decay_spec = media | rf | organic_media | organic_rf
+    model_spec = spec.ModelSpec(adstock_decay_spec=decay_spec)
+    mmm = model.Meridian(input_data=inp_data, model_spec=model_spec)
+
+    expected_media = list(media.values()) or constants.GEOMETRIC_DECAY
+    expected_rf = list(rf.values()) or constants.GEOMETRIC_DECAY
+    expected_organic_media = (
+        list(organic_media.values()) or constants.GEOMETRIC_DECAY
+    )
+    expected_organic_rf = list(organic_rf.values()) or constants.GEOMETRIC_DECAY
+
+    self.assertSequenceEqual(mmm.adstock_decay_spec.media, expected_media)
+    self.assertSequenceEqual(mmm.adstock_decay_spec.rf, expected_rf)
+    self.assertSequenceEqual(
+        mmm.adstock_decay_spec.organic_media, expected_organic_media
+    )
+    self.assertSequenceEqual(
+        mmm.adstock_decay_spec.organic_rf, expected_organic_rf
+    )
+
+  @parameterized.product(
+      **data_test_utils.ADSTOCK_DECAY_SPEC_CASES,
+      bad_channel=({"nonexistent_channel": constants.GEOMETRIC_DECAY},),
+  )
+  def test_from_channels_misnamed_channel_raises_error(
+      self, media, rf, organic_media, organic_rf, bad_channel
+  ):
+    """Test if an exception is raised with an unrecognized channel."""
+    if not (media or rf):
+      self.skipTest("Invalid test case: Meridian requires paid media.")
+
+    inp_data = data_test_utils.sample_input_data_revenue(
+        n_media_channels=len(media),
+        n_rf_channels=len(rf),
+        n_organic_media_channels=len(organic_media),
+        n_organic_rf_channels=len(organic_rf),
+    )
+
+    decay_spec = media | rf | organic_media | organic_rf | bad_channel
+    model_spec = spec.ModelSpec(adstock_decay_spec=decay_spec)
+
+    valid_channel_names = tuple(
+        (media | rf | organic_media | organic_rf).keys()
+    )
+
+    mmm = model.Meridian(input_data=inp_data, model_spec=model_spec)
+
+    with self.assertRaisesWithLiteralMatch(
+        ValueError,
+        "Unrecognized channel names found in `adstock_decay_spec` keys "
+        f"{tuple(decay_spec.keys())}. Keys should either contain only "
+        f"channel_names {valid_channel_names} or be "
+        "one or more of {'media', 'rf', 'organic_media', 'organic_rf'}.",
+    ):
+      _ = mmm.adstock_decay_spec
 
 
 if __name__ == "__main__":

@@ -30,16 +30,16 @@ import numpy as np
 
 
 class PosteriorMCMCSamplerTest(
-    parameterized.TestCase,
-    absltest.TestCase,
+    test_utils.MeridianTestCase,
     model_test_data.WithInputDataSamples,
 ):
 
   input_data_samples = model_test_data.WithInputDataSamples
 
-  def setUp(self):
-    super().setUp()
-    model_test_data.WithInputDataSamples.setup(self)
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    model_test_data.WithInputDataSamples.setup()
 
   def test_get_joint_dist_zeros(self):
     model_spec = spec.ModelSpec(
@@ -60,13 +60,14 @@ class PosteriorMCMCSamplerTest(
         ),
         media_effects_dist=constants.MEDIA_EFFECTS_NORMAL,
     )
+    input_data = self.short_input_data_with_media_and_rf
     meridian = model.Meridian(
-        input_data=self.short_input_data_with_media_and_rf,
+        input_data=input_data,
         model_spec=model_spec,
     )
     sample = (
         meridian.posterior_sampler_callable._get_joint_dist_unpinned().sample(
-            self._N_DRAWS
+            self._N_DRAWS, seed=self.get_next_rng_seed_or_key()
         )
     )
     test_utils.assert_allequal(
@@ -93,13 +94,14 @@ class PosteriorMCMCSamplerTest(
         ),
         media_effects_dist=constants.MEDIA_EFFECTS_NORMAL,
     )
+    input_data = self.short_input_data_with_media_only_no_controls
     meridian = model.Meridian(
-        input_data=self.short_input_data_with_media_only_no_controls,
+        input_data=input_data,
         model_spec=model_spec,
     )
     sample = (
         meridian.posterior_sampler_callable._get_joint_dist_unpinned().sample(
-            self._N_DRAWS
+            self._N_DRAWS, seed=self.get_next_rng_seed_or_key()
         )
     )
     test_utils.assert_allequal(
@@ -138,14 +140,17 @@ class PosteriorMCMCSamplerTest(
         rf_prior_type=paid_media_prior_type,
         media_effects_dist=media_effects_dist,
     )
+    input_data = self.short_input_data_with_media_only
     meridian = model.Meridian(
         model_spec=model_spec,
-        input_data=self.short_input_data_with_media_only,
+        input_data=input_data,
     )
 
     # Take a single draw of all parameters from the prior distribution.
     par_structtuple = (
-        meridian.posterior_sampler_callable._get_joint_dist_unpinned().sample(1)
+        meridian.posterior_sampler_callable._get_joint_dist_unpinned().sample(
+            1, seed=self.get_next_rng_seed_or_key()
+        )
     )
     par = par_structtuple._asdict()
 
@@ -222,6 +227,7 @@ class PosteriorMCMCSamplerTest(
         alpha=par[constants.ALPHA_M],
         ec=par[constants.EC_M],
         slope=par[constants.SLOPE_M],
+        decay_functions=meridian.adstock_decay_spec.media,
     )[0, :, :, :]
     beta_m = par[constants.BETA_GM][0, :, :]
     y_means = (
@@ -284,14 +290,17 @@ class PosteriorMCMCSamplerTest(
         rf_prior_type=paid_media_prior_type,
         media_effects_dist=media_effects_dist,
     )
+    input_data = self.short_input_data_with_rf_only
     meridian = model.Meridian(
         model_spec=model_spec,
-        input_data=self.short_input_data_with_rf_only,
+        input_data=input_data,
     )
 
     # Take a single draw of all parameters from the prior distribution.
     par_structtuple = (
-        meridian.posterior_sampler_callable._get_joint_dist_unpinned().sample(1)
+        meridian.posterior_sampler_callable._get_joint_dist_unpinned().sample(
+            1, seed=self.get_next_rng_seed_or_key()
+        )
     )
     par = par_structtuple._asdict()
 
@@ -369,6 +378,7 @@ class PosteriorMCMCSamplerTest(
         alpha=par[constants.ALPHA_RF],
         ec=par[constants.EC_RF],
         slope=par[constants.SLOPE_RF],
+        decay_functions=meridian.adstock_decay_spec.rf,
     )[0, :, :, :]
     beta_rf = par[constants.BETA_GRF][0, :, :]
     y_means = (
@@ -432,14 +442,17 @@ class PosteriorMCMCSamplerTest(
         rf_prior_type=paid_media_prior_type,
         media_effects_dist=media_effects_dist,
     )
+    input_data = self.short_input_data_with_media_and_rf
     meridian = model.Meridian(
         model_spec=model_spec,
-        input_data=self.short_input_data_with_media_and_rf,
+        input_data=input_data,
     )
 
     # Take a single draw of all parameters from the prior distribution.
     par_structtuple = (
-        meridian.posterior_sampler_callable._get_joint_dist_unpinned().sample(1)
+        meridian.posterior_sampler_callable._get_joint_dist_unpinned().sample(
+            1, seed=self.get_next_rng_seed_or_key()
+        )
     )
     par = par_structtuple._asdict()
 
@@ -527,6 +540,7 @@ class PosteriorMCMCSamplerTest(
         alpha=par[constants.ALPHA_M],
         ec=par[constants.EC_M],
         slope=par[constants.SLOPE_M],
+        decay_functions=meridian.adstock_decay_spec.media,
     )[0, :, :, :]
     transformed_reach = meridian.adstock_hill_rf(
         reach=meridian.rf_tensors.reach_scaled,
@@ -534,6 +548,7 @@ class PosteriorMCMCSamplerTest(
         alpha=par[constants.ALPHA_RF],
         ec=par[constants.EC_RF],
         slope=par[constants.SLOPE_RF],
+        decay_functions=meridian.adstock_decay_spec.rf,
     )[0, :, :, :]
     combined_transformed_media = backend.concatenate(
         [transformed_media, transformed_reach], axis=-1
@@ -603,8 +618,9 @@ class PosteriorMCMCSamplerTest(
         roi_calibration_period=self._ROI_CALIBRATION_PERIOD,
         rf_roi_calibration_period=self._RF_ROI_CALIBRATION_PERIOD,
     )
+    input_data = self.short_input_data_with_media_and_rf
     meridian = model.Meridian(
-        input_data=self.short_input_data_with_media_and_rf,
+        input_data=input_data,
         model_spec=model_spec,
     )
 
@@ -613,7 +629,10 @@ class PosteriorMCMCSamplerTest(
         n_adapt=self._N_ADAPT,
         n_burnin=self._N_BURNIN,
         n_keep=self._N_KEEP,
+        seed=123,
     )
+
+    expected_seed = backend.RNGHandler(123).get_kernel_seed()
     mock_sample_posterior.assert_called_with(
         n_draws=self._N_BURNIN + self._N_KEEP,
         joint_dist=mock.ANY,
@@ -626,8 +645,10 @@ class PosteriorMCMCSamplerTest(
         max_energy_diff=500.0,
         unrolled_leapfrog_steps=1,
         parallel_iterations=10,
-        seed=None,
+        seed=mock.ANY,
     )
+    actual_seed = mock_sample_posterior.call_args.kwargs["seed"]
+    test_utils.assert_seed_allequal(actual_seed, expected_seed)
     knots_shape = (self._N_CHAINS, self._N_KEEP, self._N_TIMES_SHORT)
     control_shape = (self._N_CHAINS, self._N_KEEP, self._N_CONTROLS)
     media_channel_shape = (self._N_CHAINS, self._N_KEEP, self._N_MEDIA_CHANNELS)
@@ -730,8 +751,9 @@ class PosteriorMCMCSamplerTest(
     model_spec = spec.ModelSpec(
         roi_calibration_period=self._ROI_CALIBRATION_PERIOD,
     )
+    input_data = self.short_input_data_with_media_only
     meridian = model.Meridian(
-        input_data=self.short_input_data_with_media_only,
+        input_data=input_data,
         model_spec=model_spec,
     )
 
@@ -740,7 +762,10 @@ class PosteriorMCMCSamplerTest(
         n_adapt=self._N_ADAPT,
         n_burnin=self._N_BURNIN,
         n_keep=self._N_KEEP,
+        seed=123,
     )
+
+    expected_seed = backend.RNGHandler(123).get_kernel_seed()
     mock_sample_posterior.assert_called_with(
         n_draws=self._N_BURNIN + self._N_KEEP,
         joint_dist=mock.ANY,
@@ -753,8 +778,10 @@ class PosteriorMCMCSamplerTest(
         max_energy_diff=500.0,
         unrolled_leapfrog_steps=1,
         parallel_iterations=10,
-        seed=None,
+        seed=mock.ANY,
     )
+    actual_seed = mock_sample_posterior.call_args.kwargs["seed"]
+    test_utils.assert_seed_allequal(actual_seed, expected_seed)
     knots_shape = (self._N_CHAINS, self._N_KEEP, self._N_TIMES_SHORT)
     control_shape = (self._N_CHAINS, self._N_KEEP, self._N_CONTROLS)
     media_channel_shape = (self._N_CHAINS, self._N_KEEP, self._N_MEDIA_CHANNELS)
@@ -849,8 +876,9 @@ class PosteriorMCMCSamplerTest(
     model_spec = spec.ModelSpec(
         roi_calibration_period=self._ROI_CALIBRATION_PERIOD,
     )
+    input_data = self.short_input_data_with_media_only_no_controls
     meridian = model.Meridian(
-        input_data=self.short_input_data_with_media_only_no_controls,
+        input_data=input_data,
         model_spec=model_spec,
     )
 
@@ -859,8 +887,10 @@ class PosteriorMCMCSamplerTest(
         n_adapt=self._N_ADAPT,
         n_burnin=self._N_BURNIN,
         n_keep=self._N_KEEP,
+        seed=123,
     )
 
+    expected_seed = backend.RNGHandler(123).get_kernel_seed()
     mock_sample_posterior.assert_called_with(
         n_draws=self._N_BURNIN + self._N_KEEP,
         joint_dist=mock.ANY,
@@ -873,8 +903,10 @@ class PosteriorMCMCSamplerTest(
         max_energy_diff=500.0,
         unrolled_leapfrog_steps=1,
         parallel_iterations=10,
-        seed=None,
+        seed=mock.ANY,
     )
+    actual_seed = mock_sample_posterior.call_args.kwargs["seed"]
+    test_utils.assert_seed_allequal(actual_seed, expected_seed)
 
     # Control parameters should not exist in the inference data posteriors.
     for param in (
@@ -900,8 +932,9 @@ class PosteriorMCMCSamplerTest(
     model_spec = spec.ModelSpec(
         rf_roi_calibration_period=self._RF_ROI_CALIBRATION_PERIOD,
     )
+    input_data = self.short_input_data_with_rf_only
     meridian = model.Meridian(
-        input_data=self.short_input_data_with_rf_only,
+        input_data=input_data,
         model_spec=model_spec,
     )
 
@@ -910,7 +943,10 @@ class PosteriorMCMCSamplerTest(
         n_adapt=self._N_ADAPT,
         n_burnin=self._N_BURNIN,
         n_keep=self._N_KEEP,
+        seed=123,
     )
+
+    expected_seed = backend.RNGHandler(123).get_kernel_seed()
     mock_sample_posterior.assert_called_with(
         n_draws=self._N_BURNIN + self._N_KEEP,
         joint_dist=mock.ANY,
@@ -923,8 +959,10 @@ class PosteriorMCMCSamplerTest(
         max_energy_diff=500.0,
         unrolled_leapfrog_steps=1,
         parallel_iterations=10,
-        seed=None,
+        seed=mock.ANY,
     )
+    actual_seed = mock_sample_posterior.call_args.kwargs["seed"]
+    test_utils.assert_seed_allequal(actual_seed, expected_seed)
     knots_shape = (self._N_CHAINS, self._N_KEEP, self._N_TIMES_SHORT)
     control_shape = (self._N_CHAINS, self._N_KEEP, self._N_CONTROLS)
     rf_channel_shape = (self._N_CHAINS, self._N_KEEP, self._N_RF_CHANNELS)
@@ -1018,8 +1056,9 @@ class PosteriorMCMCSamplerTest(
         roi_calibration_period=self._ROI_CALIBRATION_PERIOD,
         rf_roi_calibration_period=self._RF_ROI_CALIBRATION_PERIOD,
     )
+    input_data = self.short_input_data_with_media_and_rf
     meridian = model.Meridian(
-        input_data=self.short_input_data_with_media_and_rf,
+        input_data=input_data,
         model_spec=model_spec,
     )
 
@@ -1028,21 +1067,21 @@ class PosteriorMCMCSamplerTest(
         n_adapt=self._N_ADAPT,
         n_burnin=self._N_BURNIN,
         n_keep=self._N_KEEP,
+        seed=123,
     )
-    mock_sample_posterior.assert_called_with(
-        n_draws=self._N_BURNIN + self._N_KEEP,
-        joint_dist=mock.ANY,
-        n_chains=self._N_CHAINS,
-        num_adaptation_steps=self._N_ADAPT,
-        current_state=None,
-        init_step_size=None,
-        dual_averaging_kwargs=None,
-        max_tree_depth=10,
-        max_energy_diff=500.0,
-        unrolled_leapfrog_steps=1,
-        parallel_iterations=10,
-        seed=None,
-    )
+
+    handler = backend.RNGHandler(123)
+    expected_seed_1 = handler.get_kernel_seed()
+    handler = handler.advance_handler()
+    expected_seed_2 = handler.get_kernel_seed()
+
+    self.assertEqual(mock_sample_posterior.call_count, 2)
+    first_call_args = mock_sample_posterior.call_args_list[0].kwargs
+    second_call_args = mock_sample_posterior.call_args_list[1].kwargs
+
+    test_utils.assert_seed_allequal(first_call_args["seed"], expected_seed_1)
+    test_utils.assert_seed_allequal(second_call_args["seed"], expected_seed_2)
+
     n_total_chains = self._N_CHAINS * 2
     knots_shape = (n_total_chains, self._N_KEEP, self._N_TIMES_SHORT)
     control_shape = (n_total_chains, self._N_KEEP, self._N_CONTROLS)
@@ -1140,8 +1179,9 @@ class PosteriorMCMCSamplerTest(
             ),
         )
     )
+    input_data = self.short_input_data_with_media_and_rf
     meridian = model.Meridian(
-        input_data=self.short_input_data_with_media_and_rf,
+        input_data=input_data,
         model_spec=spec.ModelSpec(),
     )
 
@@ -1172,8 +1212,9 @@ class PosteriorMCMCSamplerTest(
         roi_calibration_period=self._ROI_CALIBRATION_PERIOD,
         rf_roi_calibration_period=self._RF_ROI_CALIBRATION_PERIOD,
     )
+    input_data = self.short_input_data_with_media_and_rf
     meridian = model.Meridian(
-        input_data=self.short_input_data_with_media_and_rf,
+        input_data=input_data,
         model_spec=model_spec,
     )
 
@@ -1185,7 +1226,7 @@ class PosteriorMCMCSamplerTest(
     )
     inference_data = meridian.inference_data
     meridian_with_inference_data = model.Meridian(
-        input_data=self.short_input_data_with_media_and_rf,
+        input_data=input_data,
         model_spec=model_spec,
         inference_data=inference_data,
     )
@@ -1212,8 +1253,9 @@ class PosteriorMCMCSamplerTest(
     model_spec = spec.ModelSpec(
         roi_calibration_period=self._ROI_CALIBRATION_PERIOD,
     )
+    input_data = self.short_input_data_with_media_only
     meridian = model.Meridian(
-        input_data=self.short_input_data_with_media_only,
+        input_data=input_data,
         model_spec=model_spec,
     )
 
@@ -1225,7 +1267,7 @@ class PosteriorMCMCSamplerTest(
     )
     inference_data = meridian.inference_data
     meridian_with_inference_data = model.Meridian(
-        input_data=self.short_input_data_with_media_only,
+        input_data=input_data,
         model_spec=model_spec,
         inference_data=inference_data,
     )
@@ -1430,8 +1472,9 @@ class PosteriorMCMCSamplerTest(
         roi_calibration_period=self._ROI_CALIBRATION_PERIOD,
         rf_roi_calibration_period=self._RF_ROI_CALIBRATION_PERIOD,
     )
+    input_data = self.short_input_data_with_media_and_rf
     meridian = model.Meridian(
-        input_data=self.short_input_data_with_media_and_rf,
+        input_data=input_data,
         model_spec=model_spec,
     )
 
@@ -1469,7 +1512,7 @@ class PosteriorMCMCSamplerTest(
         f" {expected_coord_size}, got {mismatched_coord_size}",
     ):
       _ = model.Meridian(
-          input_data=self.short_input_data_with_media_and_rf,
+          input_data=input_data,
           model_spec=model_spec,
           inference_data=inference_data,
       )
@@ -1480,8 +1523,12 @@ class PosteriorMCMCSamplerTest(
       dict(testcase_name="seed_is_pair", seed=[42, 123]),
   )
   def test_sample_posterior_with_seed(self, seed):
-    if seed is not None:
-      seed = backend.random.sanitize_seed(seed)
+    if (
+        backend.config.get_backend() == backend.config.Backend.JAX
+        and isinstance(seed, list)
+    ):
+      self.skipTest("JAX backend does not support sequence seeds.")
+
     mock_sample_posterior = self.enter_context(
         mock.patch.object(
             posterior_sampler,
@@ -1496,8 +1543,9 @@ class PosteriorMCMCSamplerTest(
         )
     )
     model_spec = spec.ModelSpec()
+    input_data = self.short_input_data_with_media_and_rf
     meridian = model.Meridian(
-        input_data=self.short_input_data_with_media_and_rf,
+        input_data=input_data,
         model_spec=model_spec,
     )
     meridian.sample_posterior(
@@ -1507,6 +1555,8 @@ class PosteriorMCMCSamplerTest(
         n_keep=self._N_KEEP,
         seed=seed,
     )
+
+    expected_seed = backend.RNGHandler(seed).get_kernel_seed()
     mock_sample_posterior.assert_called_with(
         n_draws=self._N_BURNIN + self._N_KEEP,
         joint_dist=mock.ANY,
@@ -1519,13 +1569,21 @@ class PosteriorMCMCSamplerTest(
         max_energy_diff=500.0,
         unrolled_leapfrog_steps=1,
         parallel_iterations=10,
-        seed=seed,
+        seed=mock.ANY,
     )
+    actual_seed = mock_sample_posterior.call_args.kwargs["seed"]
+    test_utils.assert_seed_allequal(actual_seed, expected_seed)
 
   @parameterized.named_parameters(
       dict(testcase_name="seed_is_invalid_sequence", seed=[1, 2, 3]),
   )
   def test_sample_posterior_with_invalid_seed_sequence(self, seed):
+    if backend.config.get_backend() == backend.config.Backend.JAX:
+      self.skipTest(
+          "JAX backend validates integer seed, so this TF-specific"
+          " sequence-length test is not applicable."
+      )
+
     with self.assertRaisesWithLiteralMatch(
         ValueError,
         "Invalid seed: Must be either a single integer (stateful seed) or a"
@@ -1534,8 +1592,9 @@ class PosteriorMCMCSamplerTest(
         " for details.",
     ):
       model_spec = spec.ModelSpec()
+      input_data = self.short_input_data_with_media_and_rf
       meridian = model.Meridian(
-          input_data=self.short_input_data_with_media_and_rf,
+          input_data=input_data,
           model_spec=model_spec,
       )
       meridian.sample_posterior(
@@ -1546,68 +1605,100 @@ class PosteriorMCMCSamplerTest(
           seed=seed,
       )
 
-  @parameterized.named_parameters(
-      dict(testcase_name="seed_is_none", initial_seed=None),
-      dict(
-          testcase_name="seed_is_int",
-          initial_seed=123,
-      ),
-      dict(
-          testcase_name="seed_is_pair",
-          initial_seed=[123, 456],
-      ),
-  )
-  def test_sample_posterior_seed_increment(self, initial_seed):
+  def test_sample_posterior_with_none_seed_propagates_correctly(self):
+    """Validates that seed=None is correctly propagated to the MCMC kernel."""
     n_chains_list = [self._N_CHAINS, self._N_CHAINS]
-    mock_sample_posterior = self.enter_context(
-        mock.patch.object(
-            posterior_sampler,
-            "_xla_windowed_adaptive_nuts",
-            autospec=True,
-            return_value=collections.namedtuple(
-                "StatesAndTrace", ["all_states", "trace"]
-            )(
-                all_states=self.test_posterior_states_media_and_rf,
-                trace=self.test_trace,
-            ),
-        )
+    mock_return = collections.namedtuple(
+        "StatesAndTrace", ["all_states", "trace"]
+    )(
+        all_states=self.test_posterior_states_media_and_rf,
+        trace=self.test_trace,
     )
-    model_spec = spec.ModelSpec()
-    meridian = model.Meridian(
-        input_data=self.short_input_data_with_media_and_rf,
-        model_spec=model_spec,
-    )
-
-    meridian.sample_posterior(
-        n_chains=n_chains_list,
-        n_adapt=self._N_ADAPT,
-        n_burnin=self._N_BURNIN,
-        n_keep=self._N_KEEP,
-        seed=initial_seed,
-    )
-
-    calls = mock_sample_posterior.call_args_list
-    self.assertLen(calls, len(n_chains_list))
-
-    _, kwargs0 = calls[0]
-    _, kwargs1 = calls[1]
-
-    sanitized_seeds = []
-    if initial_seed is None:
-      sanitized_seeds.append(None)
-      sanitized_seeds.append(None)
-      self.assertIsNone(kwargs0["seed"])
-      self.assertIsNone(kwargs1["seed"])
-    else:
-      sanitized_seed0 = kwargs0["seed"]
-      sanitized_seed1 = kwargs1["seed"]
-      test_utils.assert_allequal(
-          sanitized_seed1, [x + 1 for x in sanitized_seed0]
+    with mock.patch.object(
+        posterior_sampler,
+        "_xla_windowed_adaptive_nuts",
+        return_value=mock_return,
+    ) as mock_nuts:
+      meridian = model.Meridian(
+          input_data=self.short_input_data_with_media_and_rf,
+          model_spec=spec.ModelSpec(),
+      )
+      meridian.sample_posterior(
+          n_chains=n_chains_list,
+          n_adapt=self._N_ADAPT,
+          n_burnin=self._N_BURNIN,
+          n_keep=self._N_KEEP,
+          seed=None,
       )
 
-  def test_sample_posterior_seed_int(self):
+      calls = mock_nuts.call_args_list
+      self.assertLen(calls, len(n_chains_list))
+
+      self.assertIsNone(calls[0].kwargs["seed"])
+      self.assertIsNone(calls[1].kwargs["seed"])
+
+  @parameterized.named_parameters(
+      dict(testcase_name="seed_is_int", initial_seed=123),
+      dict(testcase_name="seed_is_pair", initial_seed=[123, 456]),
+  )
+  def test_posterior_sequential_batches_are_reproducible_and_independent(
+      self, initial_seed
+  ):
+    """Tests that sequential MCMC batches get independent but reproducible seeds."""
+    if (
+        backend.config.get_backend() == backend.config.Backend.JAX
+        and isinstance(initial_seed, list)
+    ):
+      self.skipTest("JAX backend does not support sequence seeds.")
+
     n_chains_list = [self._N_CHAINS, self._N_CHAINS]
-    mock_sample_posterior = self.enter_context(
+    mock_return = collections.namedtuple(
+        "StatesAndTrace", ["all_states", "trace"]
+    )(
+        all_states=self.test_posterior_states_media_and_rf,
+        trace=self.test_trace,
+    )
+
+    def run_sampling(seed):
+      """Helper to run sampling and return the seeds passed to the kernel."""
+      with mock.patch.object(
+          posterior_sampler,
+          "_xla_windowed_adaptive_nuts",
+          return_value=mock_return,
+      ) as mock_nuts:
+        meridian = model.Meridian(
+            input_data=self.short_input_data_with_media_and_rf,
+            model_spec=spec.ModelSpec(),
+        )
+        meridian.sample_posterior(
+            n_chains=n_chains_list,
+            n_adapt=self._N_ADAPT,
+            n_burnin=self._N_BURNIN,
+            n_keep=self._N_KEEP,
+            seed=seed,
+        )
+        return [call.kwargs["seed"] for call in mock_nuts.call_args_list]
+
+    seeds1 = run_sampling(initial_seed)
+    seeds2 = run_sampling(initial_seed)
+
+    self.assertLen(seeds1, 2)
+    test_utils.assert_seed_allequal(seeds1[0], seeds2[0])
+    test_utils.assert_seed_allequal(seeds1[1], seeds2[1])
+
+    test_utils.assert_seed_not_allequal(seeds1[0], seeds1[1])
+
+  @parameterized.named_parameters(
+      dict(testcase_name="n_chains_is_list", n_chains_type=list),
+      dict(testcase_name="n_chains_is_int", n_chains_type=int),
+  )
+  def test_sample_posterior_joint_distribution_cached(self, n_chains_type):
+    n_chains = (
+        [self._N_CHAINS, self._N_CHAINS]
+        if n_chains_type == list
+        else self._N_CHAINS
+    )
+    self.enter_context(
         mock.patch.object(
             posterior_sampler,
             "_xla_windowed_adaptive_nuts",
@@ -1620,27 +1711,31 @@ class PosteriorMCMCSamplerTest(
             ),
         )
     )
+    mock_get_joint_dist_unpinned = self.enter_context(
+        mock.patch.object(
+            posterior_sampler.PosteriorMCMCSampler,
+            "_get_joint_dist_unpinned",
+            autospec=True,
+            return_value=mock.MagicMock(
+                experimental_pin=lambda y: y,
+            ),
+        )
+    )
     model_spec = spec.ModelSpec()
+    input_data = self.short_input_data_with_media_and_rf
     meridian = model.Meridian(
-        input_data=self.short_input_data_with_media_and_rf,
+        input_data=input_data,
         model_spec=model_spec,
     )
 
     meridian.sample_posterior(
-        n_chains=n_chains_list,
+        n_chains=n_chains,
         n_adapt=self._N_ADAPT,
         n_burnin=self._N_BURNIN,
         n_keep=self._N_KEEP,
         seed=123,
     )
-    calls = mock_sample_posterior.call_args_list
-    self.assertLen(calls, len(n_chains_list))
-
-    _, kwargs0 = calls[0]
-    _, kwargs1 = calls[1]
-
-    test_utils.assert_allequal(kwargs0["seed"], [123, 123])
-    test_utils.assert_allequal(kwargs1["seed"], [124, 124])
+    mock_get_joint_dist_unpinned.assert_called_once()
 
 
 if __name__ == "__main__":

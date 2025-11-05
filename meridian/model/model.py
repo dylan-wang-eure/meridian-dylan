@@ -34,8 +34,9 @@ from meridian.model import prior_distribution
 from meridian.model import prior_sampler
 from meridian.model import spec
 from meridian.model import transformers
+from meridian.model.eda import eda_engine
+from meridian.model.eda import eda_spec as eda_spec_module
 import numpy as np
-
 
 __all__ = [
     "MCMCSamplingError",
@@ -91,6 +92,8 @@ class Meridian:
     model_spec: A `ModelSpec` object containing the model specification.
     inference_data: A _mutable_ `arviz.InferenceData` object containing the
       resulting data from fitting the model.
+    eda_engine: An `EDAEngine` object containing the EDA engine.
+    eda_spec: An `EDASpec` object containing the EDA specification.
     n_geos: Number of geos in the data.
     n_media_channels: Number of media channels in the data.
     n_rf_channels: Number of reach and frequency (RF) channels in the data.
@@ -126,11 +129,17 @@ class Meridian:
       treatmenttensors using the model's non-media treatment data.
     kpi_transformer: A `KpiTransformer` to scale KPI tensors using the model's
       KPI data.
-    controls_scaled: The controls tensor normalized by population and by the
-      median value.
-    non_media_treatments_scaled: The non-media treatment tensor normalized by
-      population and by the median value.
-    kpi_scaled: The KPI tensor normalized by population and by the median value.
+    controls_scaled: The controls tensor after pre-modeling transformations
+      including population scaling (for variables with
+      `ModelSpec.control_population_scaling_id` set to `True`), centering by the
+      mean, and scaling by the standard deviation.
+    non_media_treatments_scaled: The non-media treatment tensor after
+      pre-modeling transformations including population scaling (for variables
+      with `ModelSpec.non_media_population_scaling_id` set to `True`), centering
+      by the mean, and scaling by the standard deviation.
+    kpi_scaled: The KPI tensor after pre-modeling transformations including
+      population scaling, centering by the mean, and scaling by the standard
+      deviation.
     media_effects_dist: A string to specify the distribution of media random
       effects across geos.
     unique_sigma_for_each_geo: A boolean indicating whether to use a unique
@@ -148,12 +157,14 @@ class Meridian:
       inference_data: (
           az.InferenceData | None
       ) = None,  # for deserializer use only
+      eda_spec: eda_spec_module.EDASpec = eda_spec_module.EDASpec(),
   ):
     self._input_data = input_data
     self._model_spec = model_spec if model_spec else spec.ModelSpec()
     self._inference_data = (
         inference_data if inference_data else az.InferenceData()
     )
+    self._eda_spec = eda_spec
 
     self._validate_data_dependent_model_spec()
     self._validate_injected_inference_data()
@@ -183,6 +194,14 @@ class Meridian:
   @property
   def inference_data(self) -> az.InferenceData:
     return self._inference_data
+
+  @functools.cached_property
+  def eda_engine(self) -> eda_engine.EDAEngine:
+    return eda_engine.EDAEngine(self, spec=self._eda_spec)
+
+  @property
+  def eda_spec(self) -> eda_spec_module.EDASpec:
+    return self._eda_spec
 
   @functools.cached_property
   def media_tensors(self) -> media.MediaTensors:
@@ -299,6 +318,8 @@ class Meridian:
     return knots.get_knot_info(
         n_times=self.n_times,
         knots=self.model_spec.knots,
+        enable_aks=self.model_spec.enable_aks,
+        data=self.input_data,
         is_national=self.is_national,
     )
 
@@ -425,6 +446,28 @@ class Meridian:
     return tensor[backend.newaxis, ...] if self.is_national else tensor
 
   @functools.cached_property
+  def adstock_decay_spec(self) -> adstock_hill.AdstockDecaySpec:
+    """Returns `AdstockDecaySpec` object with correctly mapped channels."""
+    if isinstance(self.model_spec.adstock_decay_spec, str):
+      return adstock_hill.AdstockDecaySpec.from_consistent_type(
+          self.model_spec.adstock_decay_spec
+      )
+
+    try:
+      return self._create_adstock_decay_functions_from_channel_map(
+          self.model_spec.adstock_decay_spec
+      )
+    except KeyError as e:
+      raise ValueError(
+          "Unrecognized channel names found in `adstock_decay_spec` keys"
+          f" {tuple(self.model_spec.adstock_decay_spec.keys())}. Keys should"
+          " either contain only channel_names"
+          f" {tuple(self.input_data.get_all_adstock_hill_channels().tolist())} or"
+          " be one or more of {'media', 'rf', 'organic_media',"
+          " 'organic_rf'}."
+      ) from e
+
+  @functools.cached_property
   def prior_broadcast(self) -> prior_distribution.PriorDistribution:
     """Returns broadcasted `PriorDistribution` object."""
     total_spend = self.input_data.get_total_spend()
@@ -538,7 +581,9 @@ class Meridian:
             non_media_treatments_population_scaled[..., channel], axis=[0, 1]
         )
       elif isinstance(baseline_value, numbers.Number):
-        baseline_for_channel = backend.cast(baseline_value, backend.float32)
+        baseline_for_channel = backend.to_tensor(
+            baseline_value, dtype=backend.float32
+        )
       else:
         raise ValueError(
             f"Invalid non_media_baseline_values value: '{baseline_value}'. Only"
@@ -767,6 +812,58 @@ class Meridian:
           " different from `(n_non_media_channels,) ="
           f" ({self.n_non_media_channels},)`."
       )
+
+  def _create_adstock_decay_functions_from_channel_map(
+      self, channel_function_map: Mapping[str, str]
+  ) -> adstock_hill.AdstockDecaySpec:
+    """Create `AdstockDecaySpec` from mapping from channels to decay functions."""
+
+    for channel in channel_function_map:
+      if channel not in self.input_data.get_all_adstock_hill_channels():
+        raise KeyError(f"Channel {channel} not found in data.")
+
+    if self.input_data.media_channel is not None:
+      media_channel_builder = self.input_data.get_paid_media_channels_argument_builder().with_default_value(
+          constants.GEOMETRIC_DECAY
+      )
+      media_adstock_function = media_channel_builder(**channel_function_map)
+    else:
+      media_adstock_function = constants.GEOMETRIC_DECAY
+
+    if self.input_data.rf_channel is not None:
+      rf_channel_builder = self.input_data.get_paid_rf_channels_argument_builder().with_default_value(
+          constants.GEOMETRIC_DECAY
+      )
+      rf_adstock_function = rf_channel_builder(**channel_function_map)
+    else:
+      rf_adstock_function = constants.GEOMETRIC_DECAY
+
+    if self.input_data.organic_media_channel is not None:
+      organic_media_channel_builder = self.input_data.get_organic_media_channels_argument_builder().with_default_value(
+          constants.GEOMETRIC_DECAY
+      )
+      organic_media_adstock_function = organic_media_channel_builder(
+          **channel_function_map
+      )
+    else:
+      organic_media_adstock_function = constants.GEOMETRIC_DECAY
+
+    if self.input_data.organic_rf_channel is not None:
+      organic_rf_channel_builder = self.input_data.get_organic_rf_channels_argument_builder().with_default_value(
+          constants.GEOMETRIC_DECAY
+      )
+      organic_rf_adstock_function = organic_rf_channel_builder(
+          **channel_function_map
+      )
+    else:
+      organic_rf_adstock_function = constants.GEOMETRIC_DECAY
+
+    return adstock_hill.AdstockDecaySpec(
+        media=media_adstock_function,
+        rf=rf_adstock_function,
+        organic_media=organic_media_adstock_function,
+        organic_rf=organic_rf_adstock_function,
+    )
 
   def _warn_setting_ignored_priors(self):
     """Raises a warning if ignored priors are set."""
@@ -1060,15 +1157,11 @@ class Meridian:
             " time."
         )
 
-  def _kpi_has_variability(self):
-    """Returns True if the KPI has variability across geos and times."""
-    return self.kpi_transformer.population_scaled_stdev != 0
-
   def _validate_kpi_transformer(self):
     """Validates the KPI transformer."""
-    if self._kpi_has_variability():
+    if self.eda_engine.kpi_has_variability:
       return
-
+    # TODO: b/457552311 - Consolidate the logic for getting KPI name.
     kpi = "kpi" if self.is_national else "population_scaled_kpi"
 
     if (
@@ -1156,6 +1249,7 @@ class Meridian:
         alpha_m,
         ec_m,
         slope_m,
+        decay_functions=self.adstock_decay_spec.media,
     )
     # Absolute values is needed because the difference is negative for mROI
     # priors and positive for ROI and contribution priors.
@@ -1199,6 +1293,7 @@ class Meridian:
         alpha=alpha_rf,
         ec=ec_rf,
         slope=slope_rf,
+        decay_functions=self.adstock_decay_spec.rf,
     )
     # Absolute values is needed because the difference is negative for mROI
     # priors and positive for ROI and contribution priors.
@@ -1294,9 +1389,10 @@ class Meridian:
       alpha: backend.Tensor,
       ec: backend.Tensor,
       slope: backend.Tensor,
+      decay_functions: str | Sequence[str] = constants.GEOMETRIC_DECAY,
       n_times_output: int | None = None,
   ) -> backend.Tensor:
-    """Transforms media using Adstock and Hill functions in the desired order.
+    """Transforms media or using Adstock and Hill functions in the desired order.
 
     Args:
       media: Tensor of dimensions `(n_geos, n_media_times, n_media_channels)`
@@ -1306,6 +1402,8 @@ class Meridian:
       alpha: Uniform distribution for Adstock and Hill calculations.
       ec: Shifted half-normal distribution for Adstock and Hill calculations.
       slope: Deterministic distribution for Adstock and Hill calculations.
+      decay_functions: String or sequence of strings denoting the adstock decay
+        function(s) for each channel. Default: 'geometric'.
       n_times_output: Number of time periods to output. This argument is
         optional when the number of time periods in `media` equals
         `self.n_media_times`, in which case `n_times_output` defaults to
@@ -1326,7 +1424,7 @@ class Meridian:
         alpha=alpha,
         max_lag=self.model_spec.max_lag,
         n_times_output=n_times_output,
-        decay_function=self.model_spec.adstock_decay_function,
+        decay_functions=decay_functions,
     )
     hill_transformer = adstock_hill.HillTransformer(
         ec=ec,
@@ -1350,6 +1448,7 @@ class Meridian:
       alpha: backend.Tensor,
       ec: backend.Tensor,
       slope: backend.Tensor,
+      decay_functions: str | Sequence[str] = constants.GEOMETRIC_DECAY,
       n_times_output: int | None = None,
   ) -> backend.Tensor:
     """Transforms reach and frequency (RF) using Hill and Adstock functions.
@@ -1362,6 +1461,8 @@ class Meridian:
       alpha: Uniform distribution for Adstock and Hill calculations.
       ec: Shifted half-normal distribution for Adstock and Hill calculations.
       slope: Deterministic distribution for Adstock and Hill calculations.
+      decay_functions: String or sequence of strings denoting the adstock decay
+        function(s) for each channel. Default: 'geometric'.
       n_times_output: Number of time periods to output. This argument is
         optional when the number of time periods in `reach` equals
         `self.n_media_times`, in which case `n_times_output` defaults to
@@ -1386,7 +1487,7 @@ class Meridian:
         alpha=alpha,
         max_lag=self.model_spec.max_lag,
         n_times_output=n_times_output,
-        decay_function=self.model_spec.adstock_decay_function,
+        decay_functions=decay_functions,
     )
     adj_frequency = hill_transformer.forward(frequency)
     rf_out = adstock_transformer.forward(reach * adj_frequency)
@@ -1561,7 +1662,7 @@ class Meridian:
         a list of integers as `n_chains` to sample chains serially. For more
         information, see
         [ResourceExhaustedError when running Meridian.sample_posterior]
-        (https://developers.google.com/meridian/docs/advanced-modeling/model-debugging#gpu-oom-error).
+        (https://developers.google.com/meridian/docs/post-modeling/model-debugging#gpu-oom-error).
     """
     self.posterior_sampler_callable(
         n_chains=n_chains,

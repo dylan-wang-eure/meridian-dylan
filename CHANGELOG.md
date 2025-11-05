@@ -23,8 +23,36 @@ To release a new version (e.g. from `1.0.0` -> `2.0.0`):
 
 ## [Unreleased]
 
-* Add automatic knot selection public API to core library.
-* Add aspline and other helper functions for AKS algorithm to core library.
+* Add currency support to optimization summary and visualizer.
+* Expose new hyperparameters in AKS public api.
+* Refactor the TensorFlow RNG handler to use stateless seed generation.
+* Add `selected_geos` arg to the optimizer.
+* Add `selected_geos` arg to `get_aggregated_spend`.
+* Fix bug in `optimize()` when using `new_data` with `start_date` and `end_date`
+  matching the first and last dates in the new data.
+* Move `use_kpi` to `Summarizer` and `Visualizer` class initialization.
+* Make KPI analysis the default when revenue data is unavailable.
+
+## [1.2.1] - 2025-09-22
+
+* Add `use_kpi` arg to `output_model_results_summary`.
+* Add `lognormal_dist_from_mean_std` and `lognormal_dist_from_ci` helper
+  functions.
+* Add support for forecasted data in the optimization 2-pager visualizations.
+* Change AKS algorithm to use AIC instead of EBIC.
+* Fix dtype issue when scaling integer kpi/population.
+
+## [1.2.0] - 2025-09-04
+
+* Fix channel data misalignment in `Analyzer.hill_curves` when input channels
+  are not in alphabetical order.
+* Add `negative_baseline_probability` method to `Analyzer` class.
+* Add per-channel adstock decay function definition.
+* Methods in the `analyzer` module now return backend-agnostic tensors.
+* Validate distribution support ranges for custom priors.
+* Add `IndependentMultivariateDistribution` for per-channel distribution
+  definition.
+* Add automatic knot selection (AKS) to modeling.
 * Fix numerical stability of Adstock computation around `alpha = 1`.
 * Add `binomial` decay option to Adstock.
 * Make `trim_grids()` a public method of `OptimizationGrid` and update it to
@@ -367,4 +395,6 @@ To release a new version (e.g. from `1.0.0` -> `2.0.0`):
 [1.1.5]: https://github.com/google/meridian/releases/tag/v1.1.5
 [1.1.6]: https://github.com/google/meridian/releases/tag/v1.1.6
 [1.1.7]: https://github.com/google/meridian/releases/tag/v1.1.7
-[Unreleased]: https://github.com/google/meridian/compare/v1.1.7...HEAD
+[1.2.0]: https://github.com/google/meridian/releases/tag/v1.2.0
+[1.2.1]: https://github.com/google/meridian/releases/tag/v1.2.1
+[Unreleased]: https://github.com/google/meridian/compare/v1.2.1...HEAD

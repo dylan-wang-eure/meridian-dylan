@@ -69,43 +69,50 @@ class SummarizerTest(parameterized.TestCase):
     self.mock_meridian_kpi.input_data.kpi_type = c.NON_REVENUE
     self.mock_meridian_kpi.input_data.revenue_per_kpi = None
 
-    self.analyzer_patcher = mock.patch.object(
-        analyzer,
-        'Analyzer',
-    )
-    self.analyzer = self.analyzer_patcher.start()()
+    self.analyzer = self.enter_context(
+        mock.patch.object(
+            analyzer,
+            'Analyzer',
+        )
+    )()
+    self.analyzer._use_kpi.return_value = False
 
-    self.model_fit_patcher = mock.patch.object(
-        summarizer.visualizer,
-        'ModelFit',
-    )
-    self.model_fit = self.model_fit_patcher.start()()
+    self.model_fit = self.enter_context(
+        mock.patch.object(
+            summarizer.visualizer,
+            'ModelFit',
+        )
+    )()
 
-    self.model_diagnostics_patcher = mock.patch.object(
-        summarizer.visualizer,
-        'ModelDiagnostics',
-    )
-    self.model_diagnostics = self.model_diagnostics_patcher.start()()
+    self.model_diagnostics = self.enter_context(
+        mock.patch.object(
+            summarizer.visualizer,
+            'ModelDiagnostics',
+        )
+    )()
 
-    self.media_summary_patcher = mock.patch.object(
-        summarizer.visualizer,
-        'MediaSummary',
+    self.media_summary_class = self.enter_context(
+        mock.patch.object(
+            summarizer.visualizer,
+            'MediaSummary',
+        )
     )
-    self.media_summary_class = self.media_summary_patcher.start()
     self.media_summary = self.media_summary_class()
 
-    self.media_effects_patcher = mock.patch.object(
-        summarizer.visualizer,
-        'MediaEffects',
+    self.media_effects_class = self.enter_context(
+        mock.patch.object(
+            summarizer.visualizer,
+            'MediaEffects',
+        )
     )
-    self.media_effects_class = self.media_effects_patcher.start()
     self.media_effects = self.media_effects_class()
 
-    self.reach_frequency_patcher = mock.patch.object(
-        summarizer.visualizer,
-        'ReachAndFrequency',
+    self.reach_frequency_class = self.enter_context(
+        mock.patch.object(
+            summarizer.visualizer,
+            'ReachAndFrequency',
+        )
     )
-    self.reach_frequency_class = self.reach_frequency_patcher.start()
     self.reach_frequency = self.reach_frequency_class()
 
     self.summarizer_revenue = summarizer.Summarizer(self.mock_meridian_revenue)
@@ -117,16 +124,6 @@ class SummarizerTest(parameterized.TestCase):
     self.mock_template_env = mock.create_autospec(
         jinja2.Environment, instance=True
     )
-
-  def tearDown(self):
-    super().tearDown()
-
-    self.analyzer_patcher.stop()
-    self.model_fit_patcher.stop()
-    self.model_diagnostics_patcher.stop()
-    self.media_summary_patcher.stop()
-    self.media_effects_patcher.stop()
-    self.reach_frequency_patcher.stop()
 
   def _stub_plotters(self):
     self.model_fit.plot_model_fit().to_json.return_value = '{}'
@@ -470,12 +467,122 @@ class SummarizerTest(parameterized.TestCase):
 
     self.assertEqual(set(expected_chart_tuples), set(charts))
 
-  def test_model_fit_card_custom_date_range(self):
-    model_fit = self.model_fit
+  @parameterized.parameters([
+      (
+          summary_text.MODEL_FIT_CARD_ID,
+          [
+              (
+                  summary_text.EXPECTED_ACTUAL_OUTCOME_CHART_ID,
+                  summary_text.EXPECTED_ACTUAL_OUTCOME_CHART_DESCRIPTION_FORMAT.format(
+                      outcome=c.KPI.upper()
+                  ),
+              ),
+          ],
+      ),
+      (
+          summary_text.CHANNEL_CONTRIB_CARD_ID,
+          [
+              (
+                  summary_text.CHANNEL_CONTRIB_BY_TIME_CHART_ID,
+                  summary_text.CHANNEL_CONTRIB_BY_TIME_CHART_DESCRIPTION.format(
+                      outcome=c.KPI.upper()
+                  ),
+              ),
+              (
+                  summary_text.CHANNEL_CONTRIB_RANK_CHART_ID,
+                  summary_text.CHANNEL_CONTRIB_RANK_CHART_DESCRIPTION.format(
+                      outcome=c.KPI.upper()
+                  ),
+              ),
+              (
+                  summary_text.CHANNEL_DRIVERS_CHART_ID,
+                  summary_text.CHANNEL_DRIVERS_CHART_DESCRIPTION.format(
+                      outcome=c.KPI.upper()
+                  ),
+              ),
+              (
+                  summary_text.SPEND_OUTCOME_CHART_ID,
+                  summary_text.SPEND_OUTCOME_CHART_DESCRIPTION.format(
+                      outcome=c.KPI.upper()
+                  ),
+              ),
+              (
+                  summary_text.OUTCOME_CONTRIBUTION_CHART_ID,
+                  summary_text.OUTCOME_CONTRIBUTION_CHART_DESCRIPTION.format(
+                      outcome=c.KPI.upper()
+                  ),
+              ),
+          ],
+      ),
+      (
+          summary_text.PERFORMANCE_BREAKDOWN_CARD_ID,
+          [
+              (
+                  summary_text.ROI_EFFECTIVENESS_CHART_ID,
+                  summary_text.ROI_EFFECTIVENESS_CHART_DESCRIPTION,
+              ),
+              (
+                  summary_text.ROI_MARGINAL_CHART_ID,
+                  summary_text.ROI_MARGINAL_CHART_DESCRIPTION,
+              ),
+              (summary_text.ROI_CHANNEL_CHART_ID,),
+              (
+                  summary_text.CPIK_CHANNEL_CHART_ID,
+                  summary_text.CPIK_CHANNEL_CHART_DESCRIPTION,
+              ),
+          ],
+      ),
+      (
+          summary_text.RESPONSE_CURVES_CARD_ID,
+          [
+              (
+                  summary_text.RESPONSE_CURVES_CHART_ID,
+                  summary_text.RESPONSE_CURVES_CHART_DESCRIPTION_FORMAT.format(
+                      outcome=c.KPI.upper()
+                  ),
+              ),
+              (
+                  summary_text.OPTIMAL_FREQUENCY_CHART_ID,
+                  summary_text.OPTIMAL_FREQ_CHART_DESCRIPTION,
+              ),
+          ],
+      ),
+  ])
+  def test_card_chart_info_use_kpi(self, card_id, expected_chart_tuples):
+    self.analyzer._use_kpi.return_value = True
+    summarizer_revenue_use_kpi = summarizer.Summarizer(
+        self.mock_meridian_revenue, use_kpi=False
+    )
+    summary_html_dom = self._get_output_model_results_summary_html_dom(
+        summarizer_outcome=summarizer_revenue_use_kpi,
+    )
+    card = test_utils.get_child_element(
+        summary_html_dom, 'body/cards/card', attribs={'id': card_id}
+    )
 
+    charts = []
+    for chart in card.findall('charts/chart'):
+      chart_embed = test_utils.get_child_element(chart, 'chart-embed')
+      chart_id = chart_embed.attrib['id']
+      try:
+        chart_description_text = test_utils.get_child_element(
+            chart, 'chart-description'
+        ).text
+      except AssertionError:
+        chart_description_text = None
+      if chart_description_text is None:
+        charts.append((chart_id,))
+      else:
+        self.assertIsNotNone(chart_description_text)
+        chart_description_text = chart_description_text.strip()
+        charts.append((chart_id, chart_description_text))
+
+    self.assertEqual(set(expected_chart_tuples), set(charts))
+
+  def test_model_fit_card_custom_date_range(self):
     mock_spec = 'model_fit'
 
-    with mock.patch.object(model_fit, 'plot_model_fit') as plot:
+    with mock.patch.object(self.model_fit, 'plot_model_fit') as plot:
       plot().to_json.return_value = f'["{mock_spec}"]'
 
       self.summarizer_revenue._meridian.expand_selected_time_dims.return_value = [
@@ -710,13 +817,13 @@ class SummarizerTest(parameterized.TestCase):
             '2022-08-20',
             '2022-08-27',
         ],
+        use_kpi=False,
     )
 
   def test_media_effects_with_custom_date_range(self):
-    media_effects = self.media_effects
     mock_spec_1 = 'response_curves'
 
-    with mock.patch.object(media_effects, 'plot_response_curves') as plot:
+    with mock.patch.object(self.media_effects, 'plot_response_curves') as plot:
       plot().to_json.return_value = f'["{mock_spec_1}"]'
 
       self.summarizer_revenue._meridian.expand_selected_time_dims.return_value = [
@@ -736,7 +843,9 @@ class SummarizerTest(parameterized.TestCase):
           start_date=dt.datetime(2022, 6, 4),
           end_date=dt.datetime(2022, 7, 30),
       )
-      self.media_effects_class.assert_called_with(self.mock_meridian_revenue)
+      self.media_effects_class.assert_called_with(
+          self.mock_meridian_revenue, use_kpi=False
+      )
       plot.assert_called_with(
           confidence_level=c.DEFAULT_CONFIDENCE_LEVEL,
           selected_times=frozenset([
@@ -788,6 +897,7 @@ class SummarizerTest(parameterized.TestCase):
             '2022-07-23',
             '2022-07-30',
         ],
+        use_kpi=False,
     )
 
   def test_channel_contrib_card_plotters_called(self):
@@ -1064,16 +1174,13 @@ class SummarizerTest(parameterized.TestCase):
     )
 
   def test_response_curves_card_plotters_called(self):
-    media_effects = self.media_effects
-    reach_frequency = self.reach_frequency
-
     mock_spec_1 = 'response_curves'
     mock_spec_2 = 'optimal_frequency'
-    reach_frequency.plot_optimal_frequency().to_json.return_value = (
+    self.reach_frequency.plot_optimal_frequency().to_json.return_value = (
         f'["{mock_spec_2}"]'
     )
 
-    with mock.patch.object(media_effects, 'plot_response_curves') as plot:
+    with mock.patch.object(self.media_effects, 'plot_response_curves') as plot:
       plot().to_json.return_value = f'["{mock_spec_1}"]'
 
       summary_html_dom = self._get_output_model_results_summary_html_dom(

@@ -35,12 +35,14 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import altair as alt
 import arviz as az
+from meridian import backend
 from meridian import constants as c
 from meridian.analysis import analyzer
 from meridian.analysis import formatter
 from meridian.analysis import optimizer
 from meridian.analysis import summary_text
 from meridian.analysis import test_utils as analysis_test_utils
+from meridian.backend import test_utils as backend_test_utils
 from meridian.data import input_data
 from meridian.data import test_utils as data_test_utils
 from meridian.model import model
@@ -48,8 +50,6 @@ from meridian.model import prior_distribution
 from meridian.model import spec
 import numpy as np
 import pandas as pd
-import tensorflow as tf
-import tensorflow_probability as tfp
 import xarray as xr
 
 
@@ -156,26 +156,36 @@ def _create_budget_data(
       c.EFFECTIVENESS: ([c.CHANNEL, c.METRIC], effectiveness),
       c.ROI: (
           [c.CHANNEL, c.METRIC],
-          tf.transpose(tf.math.divide_no_nan(tf.transpose(inc_outcome), spend)),
+          backend.transpose(
+              backend.divide_no_nan(backend.transpose(inc_outcome), spend)
+          ),
       ),
   }
 
   if explicit_mroi is not None:
-    data_vars[c.MROI] = ([c.CHANNEL, c.METRIC], explicit_mroi)
+    data_vars[c.MROI] = (
+        [c.CHANNEL, c.METRIC],
+        np.array(explicit_mroi, dtype=np.float64),
+    )
   else:
     data_vars[c.MROI] = (
         [c.CHANNEL, c.METRIC],
-        tf.transpose(
-            tf.math.divide_no_nan(tf.transpose(inc_outcome), spend * 0.01)
+        backend.transpose(
+            backend.divide_no_nan(backend.transpose(inc_outcome), spend * 0.01)
         ),
     )
 
   if explicit_cpik is not None:
-    data_vars[c.CPIK] = ([c.CHANNEL, c.METRIC], explicit_cpik)
+    data_vars[c.CPIK] = (
+        [c.CHANNEL, c.METRIC],
+        np.array(explicit_cpik, dtype=np.float64),
+    )
   else:
     data_vars[c.CPIK] = (
         [c.CHANNEL, c.METRIC],
-        tf.transpose(tf.math.divide_no_nan(spend, tf.transpose(inc_outcome))),
+        backend.transpose(
+            backend.divide_no_nan(spend, backend.transpose(inc_outcome))
+        ),
     )
 
   attributes = {
@@ -228,60 +238,46 @@ def _verify_actual_vs_expected_budget_data(
     np.testing.assert_equal(actual_data.end_date, expected_data.end_date)
 
 
-_SAMPLE_NON_OPTIMIZED_DATA = _create_budget_data(
-    spend=np.array([200, 100, 300]),
-    inc_outcome=np.array(
+def _get_sample_non_optimized_data(is_revenue_kpi: bool = True) -> xr.Dataset:
+  """Creates sample non-optimized budget data on demand."""
+  if is_revenue_kpi:
+    inc_outcome = np.array(
         [[280, 280, 280, 280], [150, 150, 150, 150], [330, 330, 330, 330]]
-    ),
-    effectiveness=np.array([
-        [0.1, 0.2, 0.3, 0.4],
-        [0.1, 0.2, 0.3, 0.4],
-        [0.1, 0.2, 0.3, 0.4],
-    ]),
-    attrs={c.IS_REVENUE_KPI: True},
-)
-_SAMPLE_OPTIMIZED_DATA = _create_budget_data(
-    spend=np.array([220, 140, 240]),
-    inc_outcome=np.array(
-        [[350, 350, 349, 351], [210, 210, 209, 211], [270, 270, 269, 271]]
-    ),
-    effectiveness=np.array([
-        [0.1, 0.2, 0.3, 0.4],
-        [0.1, 0.2, 0.3, 0.4],
-        [0.1, 0.2, 0.3, 0.4],
-    ]),
-    attrs={
-        c.FIXED_BUDGET: True,
-        c.IS_REVENUE_KPI: True,
-    },
-)
-_SAMPLE_NON_OPTIMIZED_DATA_KPI = _create_budget_data(
-    spend=np.array([200, 100, 300]),
-    inc_outcome=np.array(
+    )
+  else:
+    inc_outcome = np.array(
         [[280, 280, 279, 281], [150, 150, 149, 151], [330, 330, 329, 331]]
-    ),
-    effectiveness=np.array([
-        [0.1, 0.2, 0.3, 0.4],
-        [0.1, 0.2, 0.3, 0.4],
-        [0.1, 0.2, 0.3, 0.4],
-    ]),
-    attrs={c.IS_REVENUE_KPI: False},
-)
-_SAMPLE_OPTIMIZED_DATA_KPI = _create_budget_data(
-    spend=np.array([220, 140, 240]),
-    inc_outcome=np.array(
-        [[350, 350, 349, 351], [210, 210, 209, 211], [270, 270, 269, 271]]
-    ),
-    effectiveness=np.array([
-        [0.1, 0.2, 0.3, 0.4],
-        [0.1, 0.2, 0.3, 0.4],
-        [0.1, 0.2, 0.3, 0.4],
-    ]),
-    attrs={
-        c.FIXED_BUDGET: True,
-        c.IS_REVENUE_KPI: False,
-    },
-)
+    )
+
+  return _create_budget_data(
+      spend=np.array([200, 100, 300]),
+      inc_outcome=inc_outcome,
+      effectiveness=np.array([
+          [0.1, 0.2, 0.3, 0.4],
+          [0.1, 0.2, 0.3, 0.4],
+          [0.1, 0.2, 0.3, 0.4],
+      ]),
+      attrs={c.IS_REVENUE_KPI: is_revenue_kpi},
+  )
+
+
+def _get_sample_optimized_data(is_revenue_kpi: bool = True) -> xr.Dataset:
+  """Creates sample optimized budget data on demand."""
+  return _create_budget_data(
+      spend=np.array([220, 140, 240]),
+      inc_outcome=np.array(
+          [[350, 350, 349, 351], [210, 210, 209, 211], [270, 270, 269, 271]]
+      ),
+      effectiveness=np.array([
+          [0.1, 0.2, 0.3, 0.4],
+          [0.1, 0.2, 0.3, 0.4],
+          [0.1, 0.2, 0.3, 0.4],
+      ]),
+      attrs={
+          c.FIXED_BUDGET: True,
+          c.IS_REVENUE_KPI: is_revenue_kpi,
+      },
+  )
 
 
 class OptimizerAlgorithmTest(parameterized.TestCase):
@@ -371,6 +367,10 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
     self.meridian_media_and_rf = model.Meridian(
         input_data=self.input_data_media_and_rf
     )
+    self.meridian_media_and_rf_no_lag = model.Meridian(
+        input_data=self.input_data_media_and_rf,
+        model_spec=spec.ModelSpec(max_lag=0),
+    )
     self.meridian_media_only = model.Meridian(
         input_data=self.input_data_media_only
     )
@@ -381,6 +381,9 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
 
     self.budget_optimizer_media_and_rf = optimizer.BudgetOptimizer(
         self.meridian_media_and_rf
+    )
+    self.budget_optimizer_media_and_rf_no_lag = optimizer.BudgetOptimizer(
+        self.meridian_media_and_rf_no_lag
     )
     self.budget_optimizer_media_only = optimizer.BudgetOptimizer(
         self.meridian_media_only
@@ -443,6 +446,15 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
     ):
       budget_optimizer.create_optimization_grid(
           use_posterior=use_posterior,
+      )
+
+  def test_create_optimization_grid_empty_selected_geos_raises_exception(self):
+    with self.assertRaisesRegex(
+        ValueError,
+        '`selected_geos` must not be empty.',
+    ):
+      self.budget_optimizer_media_and_rf.create_optimization_grid(
+          selected_geos=[],
       )
 
   def test_fixed_budget_target_roi_raises_exception(self):
@@ -586,7 +598,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
       self,
       mock_incremental_outcome,
   ):
-    mock_incremental_outcome.return_value = tf.ones((
+    mock_incremental_outcome.return_value = backend.ones((
         _N_CHAINS,
         _N_DRAWS,
         _N_MEDIA_CHANNELS + _N_RF_CHANNELS,
@@ -608,7 +620,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
 
   @mock.patch.object(analyzer.Analyzer, 'incremental_outcome', autospec=True)
   def test_selected_times_all_times(self, mock_incremental_outcome):
-    mock_incremental_outcome.return_value = tf.ones((
+    mock_incremental_outcome.return_value = backend.ones((
         _N_CHAINS,
         _N_DRAWS,
         _N_MEDIA_CHANNELS + _N_RF_CHANNELS,
@@ -671,7 +683,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
   def test_selected_times_used_correctly(
       self, mock_incremental_outcome, selected_times_arg, expected_times
   ):
-    mock_incremental_outcome.return_value = tf.ones((
+    mock_incremental_outcome.return_value = backend.ones((
         _N_CHAINS,
         _N_DRAWS,
         _N_MEDIA_CHANNELS + _N_RF_CHANNELS,
@@ -726,7 +738,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
       expected_times,
       expected_dates,
   ):
-    mock_inc_outcome.return_value = tf.ones((
+    mock_inc_outcome.return_value = backend.ones((
         _N_CHAINS,
         _N_DRAWS,
         _N_MEDIA_CHANNELS + _N_RF_CHANNELS,
@@ -839,8 +851,8 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
             'incremental_outcome',
             autospec=True,
             spec_set=True,
-            return_value=tf.convert_to_tensor(
-                [[_NONOPTIMIZED_INCREMENTAL_OUTCOME]], tf.float32
+            return_value=backend.to_tensor(
+                [[_NONOPTIMIZED_INCREMENTAL_OUTCOME]], backend.float32
             ),
         )
     )
@@ -852,8 +864,8 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
             'marginal_roi',
             autospec=True,
             spec_set=True,
-            return_value=tf.convert_to_tensor(
-                [[[1.0, 1.0, 1.0, 1.0, 1.0]]], tf.float32
+            return_value=backend.to_tensor(
+                [[[1.0, 1.0, 1.0, 1.0, 1.0]]], backend.float32
             ),
         )
     )
@@ -927,8 +939,10 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
       )
 
   def test_incremental_outcome_tensors(self):
-    spend = np.array([100, 200, 300, 400, 500], dtype=np.float32)
-    hist_spend = np.array([350, 400, 200, 50, 500], dtype=np.float32)
+    spend = backend.to_tensor([100, 200, 300, 400, 500], dtype=backend.float32)
+    hist_spend = backend.to_tensor(
+        [350, 400, 200, 50, 500], dtype=backend.float32
+    )
     (new_media, new_reach, new_frequency) = (
         self.budget_optimizer_media_and_rf._get_incremental_outcome_tensors(
             hist_spend, spend
@@ -936,25 +950,27 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
     )
     expected_media = (
         self.meridian_media_and_rf.media_tensors.media
-        * tf.math.divide_no_nan(
+        * backend.divide_no_nan(
             spend[:_N_MEDIA_CHANNELS], hist_spend[:_N_MEDIA_CHANNELS]
         )
     )
     expected_reach = (
         self.meridian_media_and_rf.rf_tensors.reach
-        * tf.math.divide_no_nan(
+        * backend.divide_no_nan(
             spend[-_N_RF_CHANNELS:], hist_spend[-_N_RF_CHANNELS:]
         )
     )
     expected_frequency = self.meridian_media_and_rf.rf_tensors.frequency
-    np.testing.assert_allclose(new_media, expected_media)
-    np.testing.assert_allclose(new_reach, expected_reach)
-    np.testing.assert_allclose(new_frequency, expected_frequency)
+    backend_test_utils.assert_allclose(new_media, expected_media)
+    backend_test_utils.assert_allclose(new_reach, expected_reach)
+    backend_test_utils.assert_allclose(new_frequency, expected_frequency)
 
   def test_incremental_outcome_tensors_with_optimal_frequency(self):
-    spend = np.array([100, 200, 300, 400, 500], dtype=np.float32)
-    hist_spend = np.array([350, 400, 200, 50, 500], dtype=np.float32)
-    optimal_frequency = np.array([2, 2], dtype=np.float32)
+    spend = backend.to_tensor([100, 200, 300, 400, 500], dtype=backend.float32)
+    hist_spend = backend.to_tensor(
+        [350, 400, 200, 50, 500], dtype=backend.float32
+    )
+    optimal_frequency = backend.to_tensor([2, 2], dtype=backend.float32)
     (new_media, new_reach, new_frequency) = (
         self.budget_optimizer_media_and_rf._get_incremental_outcome_tensors(
             hist_spend=hist_spend,
@@ -964,7 +980,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
     )
     expected_media = (
         self.meridian_media_and_rf.media_tensors.media
-        * tf.math.divide_no_nan(
+        * backend.divide_no_nan(
             spend[:_N_MEDIA_CHANNELS], hist_spend[:_N_MEDIA_CHANNELS]
         )
     )
@@ -972,21 +988,21 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
         self.meridian_media_and_rf.rf_tensors.reach
         * self.meridian_media_and_rf.rf_tensors.frequency
     )
-    expected_reach = tf.math.divide_no_nan(
+    expected_reach = backend.divide_no_nan(
         rf_media
-        * tf.math.divide_no_nan(
+        * backend.divide_no_nan(
             spend[-_N_RF_CHANNELS:],
             hist_spend[-_N_RF_CHANNELS:],
         ),
         optimal_frequency,
     )
     expected_frequency = (
-        tf.ones_like(self.meridian_media_and_rf.rf_tensors.frequency)
+        backend.ones_like(self.meridian_media_and_rf.rf_tensors.frequency)
         * optimal_frequency
     )
-    np.testing.assert_allclose(new_media, expected_media)
-    np.testing.assert_allclose(new_reach, expected_reach)
-    np.testing.assert_allclose(new_frequency, expected_frequency)
+    backend_test_utils.assert_allclose(new_media, expected_media)
+    backend_test_utils.assert_allclose(new_reach, expected_reach)
+    backend_test_utils.assert_allclose(new_frequency, expected_frequency)
 
   @mock.patch.object(optimizer.BudgetOptimizer, '_create_grids', autospec=True)
   @mock.patch.object(optimizer, 'get_round_factor', autospec=True)
@@ -1051,11 +1067,11 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
       mock_incremental_outcome,
       mock_get_aggregated_impressions,
   ):
-    mock_incremental_outcome.return_value = tf.convert_to_tensor(
-        [[_NONOPTIMIZED_INCREMENTAL_OUTCOME]], tf.float32
+    mock_incremental_outcome.return_value = backend.to_tensor(
+        [[_NONOPTIMIZED_INCREMENTAL_OUTCOME]], backend.float32
     )
-    mock_get_aggregated_impressions.return_value = tf.convert_to_tensor(
-        [[_AGGREGATED_IMPRESSIONS]], tf.float32
+    mock_get_aggregated_impressions.return_value = backend.to_tensor(
+        [[_AGGREGATED_IMPRESSIONS]], backend.float32
     )
 
     expected_data = _create_budget_data(
@@ -1078,12 +1094,12 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
       mock_incremental_outcome,
       mock_get_aggregated_impressions,
   ):
-    mock_incremental_outcome.return_value = tf.convert_to_tensor(
+    mock_incremental_outcome.return_value = backend.to_tensor(
         [[_NONOPTIMIZED_INCREMENTAL_OUTCOME[:_N_MEDIA_CHANNELS]]],
-        tf.float32,
+        backend.float32,
     )
-    mock_get_aggregated_impressions.return_value = tf.convert_to_tensor(
-        [[_AGGREGATED_IMPRESSIONS[:_N_MEDIA_CHANNELS]]], tf.float32
+    mock_get_aggregated_impressions.return_value = backend.to_tensor(
+        [[_AGGREGATED_IMPRESSIONS[:_N_MEDIA_CHANNELS]]], backend.float32
     )
     expected_data = _create_budget_data(
         spend=_NONOPTIMIZED_SPEND[:_N_MEDIA_CHANNELS],
@@ -1107,12 +1123,12 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
       mock_incremental_outcome,
       mock_get_aggregated_impressions,
   ):
-    mock_incremental_outcome.return_value = tf.convert_to_tensor(
+    mock_incremental_outcome.return_value = backend.to_tensor(
         [[_NONOPTIMIZED_INCREMENTAL_OUTCOME[-_N_RF_CHANNELS:]]],
-        tf.float32,
+        backend.float32,
     )
-    mock_get_aggregated_impressions.return_value = tf.convert_to_tensor(
-        [[_AGGREGATED_IMPRESSIONS[-_N_RF_CHANNELS:]]], tf.float32
+    mock_get_aggregated_impressions.return_value = backend.to_tensor(
+        [[_AGGREGATED_IMPRESSIONS[-_N_RF_CHANNELS:]]], backend.float32
     )
     expected_data = _create_budget_data(
         spend=_NONOPTIMIZED_SPEND[-_N_RF_CHANNELS:],
@@ -1134,11 +1150,11 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
       mock_incremental_outcome,
       mock_get_aggregated_impressions,
   ):
-    mock_incremental_outcome.return_value = tf.convert_to_tensor(
-        [[_OPTIMIZED_INCREMENTAL_OUTCOME]], tf.float32
+    mock_incremental_outcome.return_value = backend.to_tensor(
+        [[_OPTIMIZED_INCREMENTAL_OUTCOME]], backend.float32
     )
-    mock_get_aggregated_impressions.return_value = tf.convert_to_tensor(
-        [[_AGGREGATED_IMPRESSIONS]], tf.float32
+    mock_get_aggregated_impressions.return_value = backend.to_tensor(
+        [[_AGGREGATED_IMPRESSIONS]], backend.float32
     )
     expected_data = _create_budget_data(
         spend=_OPTIMIZED_SPEND,
@@ -1165,12 +1181,12 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
       mock_incremental_outcome,
       mock_get_aggregated_impressions,
   ):
-    mock_incremental_outcome.return_value = tf.convert_to_tensor(
+    mock_incremental_outcome.return_value = backend.to_tensor(
         [[_OPTIMIZED_INCREMENTAL_OUTCOME[:_N_MEDIA_CHANNELS]]],
-        tf.float32,
+        backend.float32,
     )
-    mock_get_aggregated_impressions.return_value = tf.convert_to_tensor(
-        [[_AGGREGATED_IMPRESSIONS[:_N_MEDIA_CHANNELS]]], tf.float32
+    mock_get_aggregated_impressions.return_value = backend.to_tensor(
+        [[_AGGREGATED_IMPRESSIONS[:_N_MEDIA_CHANNELS]]], backend.float32
     )
     expected_data = _create_budget_data(
         spend=_OPTIMIZED_MEDIA_ONLY_SPEND,
@@ -1198,12 +1214,12 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
       mock_incremental_outcome,
       mock_get_aggregated_impressions,
   ):
-    mock_incremental_outcome.return_value = tf.convert_to_tensor(
+    mock_incremental_outcome.return_value = backend.to_tensor(
         [[_OPTIMIZED_INCREMENTAL_OUTCOME[-_N_RF_CHANNELS:]]],
-        tf.float32,
+        backend.float32,
     )
-    mock_get_aggregated_impressions.return_value = tf.convert_to_tensor(
-        [[_AGGREGATED_IMPRESSIONS[-_N_RF_CHANNELS:]]], tf.float32
+    mock_get_aggregated_impressions.return_value = backend.to_tensor(
+        [[_AGGREGATED_IMPRESSIONS[-_N_RF_CHANNELS:]]], backend.float32
     )
     expected_data = _create_budget_data(
         spend=_OPTIMIZED_RF_ONLY_SPEND,
@@ -1231,11 +1247,11 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
       mock_incremental_outcome,
       mock_get_aggregated_impressions,
   ):
-    mock_incremental_outcome.return_value = tf.convert_to_tensor(
-        [[_OPTIMIZED_INCREMENTAL_OUTCOME]], tf.float32
+    mock_incremental_outcome.return_value = backend.to_tensor(
+        [[_OPTIMIZED_INCREMENTAL_OUTCOME]], backend.float32
     )
-    mock_get_aggregated_impressions.return_value = tf.convert_to_tensor(
-        [[_AGGREGATED_IMPRESSIONS]], tf.float32
+    mock_get_aggregated_impressions.return_value = backend.to_tensor(
+        [[_AGGREGATED_IMPRESSIONS]], backend.float32
     )
     expected_data = _create_budget_data(
         spend=_TARGET_MROI_SPEND,
@@ -1261,11 +1277,11 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
       mock_incremental_outcome,
       mock_get_aggregated_impressions,
   ):
-    mock_incremental_outcome.return_value = tf.convert_to_tensor(
-        [[_OPTIMIZED_INCREMENTAL_OUTCOME]], tf.float32
+    mock_incremental_outcome.return_value = backend.to_tensor(
+        [[_OPTIMIZED_INCREMENTAL_OUTCOME]], backend.float32
     )
-    mock_get_aggregated_impressions.return_value = tf.convert_to_tensor(
-        [[_AGGREGATED_IMPRESSIONS]], tf.float32
+    mock_get_aggregated_impressions.return_value = backend.to_tensor(
+        [[_AGGREGATED_IMPRESSIONS]], backend.float32
     )
     expected_data = _create_budget_data(
         spend=_TARGET_ROI_SPEND,
@@ -1376,43 +1392,74 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
     actual_data = optimization_results.optimized_data
     _verify_actual_vs_expected_budget_data(actual_data, expected_data)
 
-  def test_optimized_data_new_data(self):
-    max_lag = 15
+  @parameterized.named_parameters(
+      dict(
+          testcase_name='lagged',
+          max_lag=15,
+          meridian_key='meridian_media_and_rf',
+          budget_optimizer_key='budget_optimizer_media_and_rf',
+      ),
+      dict(
+          testcase_name='no_lag',
+          max_lag=0,
+          meridian_key='meridian_media_and_rf_no_lag',
+          budget_optimizer_key='budget_optimizer_media_and_rf_no_lag',
+      ),
+  )
+  def test_optimized_data_new_data(
+      self, max_lag: int, meridian_key: str, budget_optimizer_key: str
+  ):
+    meridian_media_and_rf = getattr(self, meridian_key)
+    budget_optimizer_media_and_rf = getattr(self, budget_optimizer_key)
     n_new_times = 15
     total_times = max_lag + n_new_times
-    times = self.meridian_media_and_rf.input_data.time.to_numpy().tolist()
-    start_date = times[-n_new_times]
-    end_date = times[-1]
+    weekly_step = np.timedelta64(1, 'W')
+    new_times = np.datetime_as_string(
+        np.arange(
+            np.datetime64('2025-01-06'),
+            np.datetime64('2025-01-06') + total_times * weekly_step,
+            weekly_step,
+        )
+    ).tolist()
     new_data = analyzer.DataTensors(
-        media=self.meridian_media_and_rf.media_tensors.media[
+        media=meridian_media_and_rf.media_tensors.media[..., -total_times:, :],
+        media_spend=meridian_media_and_rf.media_tensors.media_spend[
             ..., -total_times:, :
         ],
-        media_spend=self.meridian_media_and_rf.media_tensors.media_spend[
+        reach=meridian_media_and_rf.rf_tensors.reach[..., -total_times:, :],
+        frequency=meridian_media_and_rf.rf_tensors.frequency[
             ..., -total_times:, :
         ],
-        reach=self.meridian_media_and_rf.rf_tensors.reach[
+        rf_spend=meridian_media_and_rf.rf_tensors.rf_spend[
             ..., -total_times:, :
         ],
-        frequency=self.meridian_media_and_rf.rf_tensors.frequency[
-            ..., -total_times:, :
-        ],
-        rf_spend=self.meridian_media_and_rf.rf_tensors.rf_spend[
-            ..., -total_times:, :
-        ],
-        revenue_per_kpi=self.meridian_media_and_rf.revenue_per_kpi[
+        revenue_per_kpi=meridian_media_and_rf.revenue_per_kpi[
             ..., -total_times:
         ],
-        time=times[-total_times:],
+        time=new_times,
     )
-    actual = self.budget_optimizer_media_and_rf.optimize(
+    actual = budget_optimizer_media_and_rf.optimize(
         new_data=new_data,
+        start_date=new_times[-n_new_times],
+        end_date=new_times[-1],
+    )
+    times = meridian_media_and_rf.input_data.time.to_numpy().tolist()
+    start_date = times[-n_new_times]
+    end_date = times[-1]
+    expected = budget_optimizer_media_and_rf.optimize(
         start_date=start_date,
         end_date=end_date,
     )
-    expected = self.budget_optimizer_media_and_rf.optimize(
-        start_date=start_date,
-        end_date=end_date,
+    expected.nonoptimized_data.attrs[c.START_DATE] = new_times[-n_new_times]
+    expected.nonoptimized_data.attrs[c.END_DATE] = new_times[-1]
+    expected._nonoptimized_data_with_optimal_freq.attrs[c.START_DATE] = (
+        new_times[-n_new_times]
     )
+    expected._nonoptimized_data_with_optimal_freq.attrs[c.END_DATE] = new_times[
+        -1
+    ]
+    expected.optimized_data.attrs[c.START_DATE] = new_times[-n_new_times]
+    expected.optimized_data.attrs[c.END_DATE] = new_times[-1]
     _verify_actual_vs_expected_budget_data(
         actual.nonoptimized_data, expected.nonoptimized_data
     )
@@ -1472,7 +1519,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
             self.budget_optimizer_media_and_rf._analyzer,
             'incremental_outcome',
             autospec=True,
-            return_value=tf.ones((
+            return_value=backend.ones((
                 _N_CHAINS,
                 _N_DRAWS,
                 _N_MEDIA_CHANNELS + _N_RF_CHANNELS,
@@ -1495,8 +1542,10 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
     spend_constraint_upper = np.array([0.5, 0.4, 0.3, 0.2, 0.1])
     start_date = '2021-01-25'
     end_date = '2021-02-01'
+    selected_geos = ['geo 0']
     optimization_grid = (
         self.budget_optimizer_media_and_rf.create_optimization_grid(
+            selected_geos=selected_geos,
             start_date=start_date,
             end_date=end_date,
             spend_constraint_lower=spend_constraint_lower,
@@ -1538,6 +1587,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
     mock_incremental_outcome.assert_called_with(
         use_posterior=True,
         new_data=mock.ANY,
+        selected_geos=selected_geos,
         selected_times=[start_date, end_date],
         use_kpi=False,
         batch_size=c.DEFAULT_BATCH_SIZE,
@@ -1566,7 +1616,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
             self.budget_optimizer_media_only._analyzer,
             'incremental_outcome',
             autospec=True,
-            return_value=tf.ones((_N_CHAINS, _N_DRAWS, _N_MEDIA_CHANNELS)),
+            return_value=backend.ones((_N_CHAINS, _N_DRAWS, _N_MEDIA_CHANNELS)),
         )
     )
     model.Meridian.inference_data = mock.PropertyMock(
@@ -1625,6 +1675,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
     mock_incremental_outcome.assert_called_with(
         use_posterior=True,
         new_data=mock.ANY,
+        selected_geos=None,
         selected_times=[start_date, end_date],
         batch_size=c.DEFAULT_BATCH_SIZE,
         use_kpi=False,
@@ -1647,7 +1698,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
             self.budget_optimizer_rf_only._analyzer,
             'incremental_outcome',
             autospec=True,
-            return_value=tf.ones((
+            return_value=backend.ones((
                 _N_CHAINS,
                 _N_DRAWS,
                 _N_RF_CHANNELS,
@@ -1709,6 +1760,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
     mock_incremental_outcome.assert_called_with(
         use_posterior=True,
         new_data=mock.ANY,
+        selected_geos=None,
         selected_times=[start_date, end_date],
         batch_size=c.DEFAULT_BATCH_SIZE,
         use_kpi=False,
@@ -1737,7 +1789,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
             self.budget_optimizer_media_and_rf._analyzer,
             'incremental_outcome',
             autospec=True,
-            return_value=tf.ones((
+            return_value=backend.ones((
                 _N_CHAINS,
                 _N_DRAWS,
                 _N_MEDIA_CHANNELS + _N_RF_CHANNELS,
@@ -1806,13 +1858,13 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
             [1.0, 1.0, 1.0, np.nan, np.nan],
         ],
     )
-    new_frequency = (
-        tf.ones_like(self.meridian_media_and_rf.rf_tensors.frequency)
-        * optimal_frequency
-    )
+    new_frequency = backend.ones_like(
+        self.meridian_media_and_rf.rf_tensors.frequency
+    ) * backend.to_tensor(optimal_frequency.values, dtype=backend.float32)
     mock_incremental_outcome.assert_called_with(
         use_posterior=True,
         new_data=mock.ANY,
+        selected_geos=None,
         selected_times=[start_date, end_date],
         batch_size=c.DEFAULT_BATCH_SIZE,
         use_kpi=False,
@@ -1840,7 +1892,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
             self.budget_optimizer_rf_only._analyzer,
             'incremental_outcome',
             autospec=True,
-            return_value=tf.ones((_N_CHAINS, _N_DRAWS, _N_RF_CHANNELS)),
+            return_value=backend.ones((_N_CHAINS, _N_DRAWS, _N_RF_CHANNELS)),
         )
     )
     model.Meridian.inference_data = mock.PropertyMock(
@@ -1904,13 +1956,13 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
             [1.0, np.nan],
         ],
     )
-    new_frequency = (
-        tf.ones_like(self.meridian_media_and_rf.rf_tensors.frequency)
-        * optimal_frequency
-    )
+    new_frequency = backend.ones_like(
+        self.meridian_media_and_rf.rf_tensors.frequency
+    ) * backend.to_tensor(optimal_frequency.values, dtype=backend.float32)
     mock_incremental_outcome.assert_called_with(
         use_posterior=True,
         new_data=mock.ANY,
+        selected_geos=None,
         selected_times=[start_date, end_date],
         batch_size=c.DEFAULT_BATCH_SIZE,
         use_kpi=False,
@@ -1963,7 +2015,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
       scenario,
       expected_optimal_spend,
   ):
-    mock_incremental_outcome.return_value = tf.ones((
+    mock_incremental_outcome.return_value = backend.ones((
         _N_CHAINS,
         _N_DRAWS,
         _N_MEDIA_CHANNELS + _N_RF_CHANNELS,
@@ -2002,6 +2054,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
         use_kpi=False,
         use_posterior=True,
         use_optimal_frequency=False,
+        selected_geos=None,
         start_date=None,
         end_date=None,
         gtol=0.1,
@@ -2243,12 +2296,11 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
       expected_start_date,
       expected_end_date,
   ):
-    budget_optimizer = self.budget_optimizer_media_and_rf
-    mock_validate_selected_times = self.enter_context(
+    mock_expand_selected_times = self.enter_context(
         mock.patch.object(
-            budget_optimizer,
-            '_validate_selected_times',
-            side_effect=budget_optimizer._validate_selected_times,
+            optimizer,
+            '_expand_selected_times',
+            side_effect=optimizer._expand_selected_times,
         )
     )
     with self.assertWarnsRegex(
@@ -2263,7 +2315,8 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
           # Set larger gtol to avoid timeouts.
           gtol=0.1,
       )
-      mock_validate_selected_times.assert_called_with(
+      mock_expand_selected_times.assert_called_with(
+          meridian=mock.ANY,
           start_date=expected_start_date,
           end_date=expected_end_date,
           new_data=mock.ANY,
@@ -2295,12 +2348,11 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
       expected_start_date,
       expected_end_date,
   ):
-    budget_optimizer = self.budget_optimizer_media_only
-    mock_validate_selected_times = self.enter_context(
+    mock_expand_selected_times = self.enter_context(
         mock.patch.object(
-            budget_optimizer,
-            '_validate_selected_times',
-            side_effect=budget_optimizer._validate_selected_times,
+            optimizer,
+            '_expand_selected_times',
+            side_effect=optimizer._expand_selected_times,
         )
     )
     with self.assertWarnsRegex(
@@ -2315,7 +2367,8 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
           # Set larger gtol to avoid timeouts.
           gtol=0.1,
       )
-      mock_validate_selected_times.assert_called_with(
+      mock_expand_selected_times.assert_called_with(
+          meridian=mock.ANY,
           start_date=expected_start_date,
           end_date=expected_end_date,
           new_data=mock.ANY,
@@ -2447,6 +2500,36 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
           ),
       ),
       dict(
+          testcase_name='selected_geos',
+          create_optimization_grid_args={'selected_geos': ['geo_0']},
+          optimize_args={'selected_geos': ['geo_1']},
+          warning_regex=(
+              'Given optimization grid was created with `selected_geos` ='
+              " \\['geo_0'\\], but optimization request was called with"
+              " `selected_geos` = \\['geo_1'\\]. A new grid will be created."
+          ),
+      ),
+      dict(
+          testcase_name='selected_geos_none_in_grid',
+          create_optimization_grid_args={'selected_geos': None},
+          optimize_args={'selected_geos': ['geo_1']},
+          warning_regex=(
+              'Given optimization grid was created with `selected_geos` ='
+              ' None, but optimization request was called with'
+              " `selected_geos` = \\['geo_1'\\]. A new grid will be created."
+          ),
+      ),
+      dict(
+          testcase_name='selected_geos_none_in_optimize',
+          create_optimization_grid_args={'selected_geos': ['geo_0']},
+          optimize_args={'selected_geos': None},
+          warning_regex=(
+              'Given optimization grid was created with `selected_geos` ='
+              " \\['geo_0'\\], but optimization request was called with"
+              ' `selected_geos` = None. A new grid will be created.'
+          ),
+      ),
+      dict(
           testcase_name='pct_of_spend',
           create_optimization_grid_args={
               'pct_of_spend': np.array([0.3, 0.3, 0.2, 0.1, 0.1])
@@ -2479,6 +2562,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
       budget_optimizer.optimize(optimization_grid=grid, **optimize_args)
     default_optimization_args = {
         'new_data': None,
+        'selected_geos': None,
         'start_date': None,
         'end_date': None,
         'budget': None,
@@ -2489,6 +2573,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
         'use_posterior': True,
         'use_kpi': False,
         'use_optimal_frequency': True,
+        'max_frequency': None,
         'batch_size': 100,
     }
     default_optimization_args.update(optimize_args)
@@ -2519,7 +2604,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
     mock_create_optimization_grid_media_and_rf.assert_called_once()
 
   def test_optimize_with_wrong_new_data_grid_new_grid_created(self):
-    start_date = '2025-04-07'
+    start_date = '2025-04-07'  # new_data start date
     end_date = '2025-04-28'
     new_times = [
         '2025-03-31',
@@ -2558,6 +2643,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
     )
     optimization_args = {
         'new_data': new_data,
+        'selected_geos': None,
         'start_date': start_date,
         'end_date': end_date,
         'budget': None,
@@ -2568,6 +2654,7 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
         'use_posterior': True,
         'use_kpi': False,
         'use_optimal_frequency': True,
+        'max_frequency': None,
         'batch_size': 100,
     }
     with self.assertWarnsRegex(
@@ -2687,8 +2774,8 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
   def test_optimizer_budget_with_specified_budget(
       self, mock_incremental_outcome
   ):
-    mock_incremental_outcome.return_value = tf.convert_to_tensor(
-        [[_OPTIMIZED_INCREMENTAL_OUTCOME]], tf.float32
+    mock_incremental_outcome.return_value = backend.to_tensor(
+        [[_OPTIMIZED_INCREMENTAL_OUTCOME]], backend.float32
     )
     budget = 2000
 
@@ -2715,8 +2802,8 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
   def test_budget_data_with_specified_pct_of_spend(
       self, mock_incremental_outcome
   ):
-    mock_incremental_outcome.return_value = tf.convert_to_tensor(
-        [[_NONOPTIMIZED_INCREMENTAL_OUTCOME]], tf.float32
+    mock_incremental_outcome.return_value = backend.to_tensor(
+        [[_NONOPTIMIZED_INCREMENTAL_OUTCOME]], backend.float32
     )
     expected_pct_of_spend = [0.1, 0.2, 0.3, 0.3, 0.1]
 
@@ -2755,8 +2842,8 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
   def test_budget_data_with_new_data_with_specified_pct_of_spend(
       self, mock_incremental_outcome
   ):
-    mock_incremental_outcome.return_value = tf.convert_to_tensor(
-        [[_NONOPTIMIZED_INCREMENTAL_OUTCOME]], tf.float32
+    mock_incremental_outcome.return_value = backend.to_tensor(
+        [[_NONOPTIMIZED_INCREMENTAL_OUTCOME]], backend.float32
     )
     expected_pct_of_spend = [0.1, 0.2, 0.3, 0.3, 0.1]
 
@@ -2816,8 +2903,8 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
   def test_budget_data_with_specified_pct_of_spend_size_incorrect(
       self, mock_incremental_outcome
   ):
-    mock_incremental_outcome.return_value = tf.convert_to_tensor(
-        [[_NONOPTIMIZED_INCREMENTAL_OUTCOME]], tf.float32
+    mock_incremental_outcome.return_value = backend.to_tensor(
+        [[_NONOPTIMIZED_INCREMENTAL_OUTCOME]], backend.float32
     )
     with self.assertRaisesWithLiteralMatch(
         ValueError,
@@ -2832,8 +2919,8 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
   def test_budget_data_with_specified_pct_of_spend_value_incorrect(
       self, mock_incremental_outcome
   ):
-    mock_incremental_outcome.return_value = tf.convert_to_tensor(
-        [[_NONOPTIMIZED_INCREMENTAL_OUTCOME]], tf.float32
+    mock_incremental_outcome.return_value = backend.to_tensor(
+        [[_NONOPTIMIZED_INCREMENTAL_OUTCOME]], backend.float32
     )
     with self.assertRaisesWithLiteralMatch(
         ValueError,
@@ -2851,8 +2938,8 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
             self.budget_optimizer_media_and_rf._analyzer,
             'incremental_outcome',
             autospec=True,
-            return_value=tf.convert_to_tensor(
-                [[_NONOPTIMIZED_INCREMENTAL_OUTCOME]], tf.float32
+            return_value=backend.to_tensor(
+                [[_NONOPTIMIZED_INCREMENTAL_OUTCOME]], backend.float32
             ),
         )
     )
@@ -2909,6 +2996,106 @@ class OptimizerAlgorithmTest(parameterized.TestCase):
       # Check that no warnings were raised
       self.assertEmpty(w_list, '\n'.join([str(w.message) for w in w_list]))
 
+  def test_get_response_curves_new_times_data_correct(self):
+    meridian = self.budget_optimizer_media_and_rf._meridian
+    max_lag = meridian.model_spec.max_lag
+    n_new_times = 15
+    total_times = max_lag + n_new_times
+    new_data_end_date = meridian.input_data.time.values[-1]
+    selected_times_start_date = meridian.input_data.time.values[-n_new_times]
+    selected_times = meridian.input_data.time.values[-n_new_times:].tolist()
+
+    new_data_times = meridian.input_data.time.values[-total_times:].tolist()
+    new_data = analyzer.DataTensors(
+        media=meridian.media_tensors.media[..., -total_times:, :],
+        media_spend=meridian.media_tensors.media_spend[..., -total_times:, :],
+        reach=meridian.rf_tensors.reach[..., -total_times:, :],
+        frequency=meridian.rf_tensors.frequency[..., -total_times:, :],
+        rf_spend=meridian.rf_tensors.rf_spend[..., -total_times:, :],
+        revenue_per_kpi=meridian.revenue_per_kpi[..., -total_times:],
+        time=new_data_times,
+    )
+
+    with mock.patch.object(
+        analyzer.Analyzer,
+        'response_curves',
+        wraps=self.budget_optimizer_media_and_rf._analyzer.response_curves,
+    ) as mock_response_curves:
+      # Create OptimizationResults with new_data and selected_times
+      optimization_results_new_data = (
+          self.budget_optimizer_media_and_rf.optimize(
+              new_data=new_data,
+              start_date=selected_times_start_date,
+              end_date=new_data_end_date,
+          )
+      )
+      optimization_results_new_data.get_response_curves()
+      mock_response_curves.assert_called_once()
+      _, kwargs = mock_response_curves.call_args
+      kwargs_new_data_times = (
+          np.asarray(kwargs['new_data'].time).astype(str).tolist()
+      )
+      self.assertEqual(kwargs_new_data_times, new_data_times)
+      self.assertEqual(
+          kwargs['selected_times'],
+          selected_times,
+      )
+
+      mock_response_curves.reset_mock()
+
+      # Create OptimizationResults with old data and selected_times
+      optimization_results_old_data = (
+          self.budget_optimizer_media_and_rf.optimize(
+              start_date=selected_times_start_date,
+              end_date=new_data_end_date,
+          )
+      )
+      optimization_results_old_data.get_response_curves()
+      mock_response_curves.assert_called_once()
+      _, kwargs = mock_response_curves.call_args
+      self.assertEqual(kwargs['selected_times'], selected_times)
+
+  def test_create_budget_dataset_selected_geos_correct(self):
+    selected_geos = self.budget_optimizer_media_and_rf._meridian.input_data.geo.values.tolist()[
+        :2
+    ]
+    with mock.patch.object(
+        self.budget_optimizer_media_and_rf,
+        '_create_budget_dataset',
+        autospec=True,
+        wraps=self.budget_optimizer_media_and_rf._create_budget_dataset,
+    ) as mock_create_budget_dataset:
+      self.budget_optimizer_media_and_rf.optimize(selected_geos=selected_geos)
+      self.assertLen(
+          mock_create_budget_dataset.call_args_list,
+          3,
+          'Expected create_budget_dataset to be called 3 times.',
+      )
+      for _, kwargs in mock_create_budget_dataset.call_args_list:
+        self.assertEqual(
+            kwargs['selected_geos'],
+            selected_geos,
+        )
+
+  def test_get_response_curves_selected_geos_correct(self):
+    selected_geos = self.budget_optimizer_media_and_rf._meridian.input_data.geo.values.tolist()[
+        :2
+    ]
+    with mock.patch.object(
+        analyzer.Analyzer,
+        'response_curves',
+        wraps=self.budget_optimizer_media_and_rf._analyzer.response_curves,
+    ) as mock_response_curves:
+      # Create OptimizationResults with selected_geos
+      optimization_results = self.budget_optimizer_media_and_rf.optimize(
+          selected_geos=selected_geos
+      )
+
+      optimization_results.get_response_curves()
+      mock_response_curves.assert_called_once()
+      _, kwargs = mock_response_curves.call_args
+      self.assertEqual(kwargs['selected_geos'], selected_geos)
+
 
 class OptimizerPlotsTest(absltest.TestCase):
 
@@ -2929,6 +3116,9 @@ class OptimizerPlotsTest(absltest.TestCase):
     )
     meridian.input_data.kpi_type = c.REVENUE
     meridian.input_data.revenue_per_kpi = self.revenue_per_kpi
+    meridian.rf_tensors.rf_impressions = mock.create_autospec(
+        backend.Tensor, instance=True, shape=(n_geos, n_times, _N_RF_CHANNELS)
+    )
 
     self.meridian = meridian
     self.budget_optimizer = optimizer.BudgetOptimizer(meridian)
@@ -2938,6 +3128,7 @@ class OptimizerPlotsTest(absltest.TestCase):
         use_kpi=False,
         use_posterior=True,
         use_optimal_frequency=False,
+        selected_geos=None,
         start_date=None,
         end_date=None,
         gtol=0.1,
@@ -2945,6 +3136,11 @@ class OptimizerPlotsTest(absltest.TestCase):
         optimal_frequency=None,
         selected_times=self.meridian.expand_selected_time_dims(),
     )
+    self.sample_non_optimized_data = _get_sample_non_optimized_data(
+        is_revenue_kpi=True
+    )
+    self.sample_optimized_data = _get_sample_optimized_data(is_revenue_kpi=True)
+
     self.optimization_results = optimizer.OptimizationResults(
         meridian=self.budget_optimizer._meridian,
         analyzer=self.budget_optimizer._analyzer,
@@ -2953,9 +3149,9 @@ class OptimizerPlotsTest(absltest.TestCase):
             np.array([0.7, 0.5, 0.7]),
             np.array([1.3]),
         ),
-        _nonoptimized_data=_SAMPLE_NON_OPTIMIZED_DATA,
-        _nonoptimized_data_with_optimal_freq=_SAMPLE_NON_OPTIMIZED_DATA,
-        _optimized_data=_SAMPLE_OPTIMIZED_DATA,
+        _nonoptimized_data=self.sample_non_optimized_data,
+        _nonoptimized_data_with_optimal_freq=self.sample_non_optimized_data,
+        _optimized_data=self.sample_optimized_data,
         _optimization_grid=self.optimization_grid,
     )
 
@@ -3097,13 +3293,15 @@ class OptimizerPlotsTest(absltest.TestCase):
     df = plot.data
     self.assertEqual(list(df.columns), [c.CHANNEL, c.SPEND])
     self.assertEqual(df.channel.size, 3)
-    self.assertEqual(list(df.spend), list(_SAMPLE_OPTIMIZED_DATA.spend.values))
+    self.assertEqual(
+        list(df.spend), list(self.sample_optimized_data.spend.values)
+    )
 
   def test_budget_allocation_nonoptimized_data(self):
     plot = self.optimization_results.plot_budget_allocation(optimized=False)
     df = plot.data
     self.assertEqual(
-        list(df.spend), list(_SAMPLE_NON_OPTIMIZED_DATA.spend.values)
+        list(df.spend), list(self.sample_non_optimized_data.spend.values)
     )
 
   def test_budget_allocation_correct_encoding(self):
@@ -3523,6 +3721,7 @@ class OptimizerOutputTest(parameterized.TestCase):
         use_kpi=False,
         use_posterior=True,
         use_optimal_frequency=False,
+        selected_geos=None,
         start_date=None,
         end_date=None,
         gtol=0.1,
@@ -3530,13 +3729,24 @@ class OptimizerOutputTest(parameterized.TestCase):
         optimal_frequency=None,
         selected_times=mock.MagicMock(),
     )
+    self.sample_non_optimized_data = _get_sample_non_optimized_data(
+        is_revenue_kpi=True
+    )
+    self.sample_optimized_data = _get_sample_optimized_data(is_revenue_kpi=True)
+    self.sample_non_optimized_data_kpi = _get_sample_non_optimized_data(
+        is_revenue_kpi=False
+    )
+    self.sample_optimized_data_kpi = _get_sample_optimized_data(
+        is_revenue_kpi=False
+    )
+
     self.optimization_results = optimizer.OptimizationResults(
         meridian=self.budget_optimizer._meridian,
         analyzer=self.budget_optimizer._analyzer,
         spend_ratio=np.array([1.0, 1.0, 1.0]),
         spend_bounds=(np.array([0.7]), np.array([1.3])),
-        _nonoptimized_data=_SAMPLE_NON_OPTIMIZED_DATA,
-        _optimized_data=_SAMPLE_OPTIMIZED_DATA,
+        _nonoptimized_data=self.sample_non_optimized_data,
+        _optimized_data=self.sample_optimized_data,
         _nonoptimized_data_with_optimal_freq=mock.MagicMock(),
         _optimization_grid=self.optimization_grid,
     )
@@ -3545,8 +3755,8 @@ class OptimizerOutputTest(parameterized.TestCase):
         analyzer=self.budget_optimizer_kpi_output._analyzer,
         spend_ratio=np.array([1.0, 1.0, 1.0]),
         spend_bounds=(np.array([0.7]), np.array([1.3])),
-        _nonoptimized_data=_SAMPLE_NON_OPTIMIZED_DATA_KPI,
-        _optimized_data=_SAMPLE_OPTIMIZED_DATA_KPI,
+        _nonoptimized_data=self.sample_non_optimized_data_kpi,
+        _optimized_data=self.sample_optimized_data_kpi,
         _nonoptimized_data_with_optimal_freq=mock.MagicMock(),
         _optimization_grid=self.optimization_grid,
     )
@@ -3684,7 +3894,7 @@ class OptimizerOutputTest(parameterized.TestCase):
     )
 
   def test_output_scenario_plan_card_text_new_budget(self):
-    new_non_optimized_data = _SAMPLE_NON_OPTIMIZED_DATA.copy()
+    new_non_optimized_data = self.sample_non_optimized_data.copy()
     new_non_optimized_data.attrs[c.USE_HISTORICAL_BUDGET] = False
     new_budget_optimization_results = dataclasses.replace(
         self.optimization_results,
@@ -4209,9 +4419,9 @@ class OptimizerKPITest(parameterized.TestCase):
     )
     custom_model_spec = spec.ModelSpec(
         prior=prior_distribution.PriorDistribution(
-            knot_values=tfp.distributions.Normal(0.0, 5.0, name=c.KNOT_VALUES),
-            roi_m=tfp.distributions.LogNormal(0.2, 0.8, name=c.ROI_M),
-            roi_rf=tfp.distributions.LogNormal(0.2, 0.8, name=c.ROI_RF),
+            knot_values=backend.tfd.Normal(0.0, 5.0, name=c.KNOT_VALUES),
+            roi_m=backend.tfd.LogNormal(0.2, 0.8, name=c.ROI_M),
+            roi_rf=backend.tfd.LogNormal(0.2, 0.8, name=c.ROI_RF),
         )
     )
     self.inference_data_media_and_rf_kpi = az.InferenceData(
@@ -4261,7 +4471,7 @@ class OptimizerKPITest(parameterized.TestCase):
             self.budget_optimizer_media_and_rf_kpi._analyzer,
             'incremental_outcome',
             autospec=True,
-            return_value=tf.ones((
+            return_value=backend.ones((
                 _N_CHAINS,
                 _N_DRAWS,
                 _N_MEDIA_CHANNELS + _N_RF_CHANNELS,
@@ -4275,6 +4485,7 @@ class OptimizerKPITest(parameterized.TestCase):
 
     mock_incremental_outcome.assert_called_with(
         # marginal roi numerator computation requires the following arguments.
+        selected_geos=None,
         selected_times=None,
         scaling_factor0=1.0,
         scaling_factor1=1.01,
@@ -4348,34 +4559,36 @@ class OptimizerKPITest(parameterized.TestCase):
         not use_kpi,
     )
 
-  def test_optimize_no_use_kpi_no_revenue_per_kpi_raises_error(self):
-    with self.assertRaisesWithLiteralMatch(
-        ValueError,
-        'Revenue analysis is not available when `revenue_per_kpi` is unknown.'
-        ' Set `use_kpi=True` to perform KPI analysis instead.',
+  def test_optimize_no_use_kpi_no_revenue_per_kpi_raises_warning(self):
+    with self.assertWarnsRegex(
+        UserWarning,
+        'Revenue analysis is not available when `revenue_per_kpi` is'
+        ' unknown. Defaulting to KPI analysis.',
     ):
       self.budget_optimizer_media_and_rf_kpi.optimize(use_kpi=False)
 
 
-class OptimizerNewDataTensorsTest(tf.test.TestCase):
+class OptimizerNewDataTensorsTest(parameterized.TestCase):
 
   def setUp(self):
     """Set up common tensors for all tests."""
     super().setUp()
     self.time = ['2023-01-01', '2023-01-08']
-    self.population = tf.constant(
-        [1000.0, 4000.0], dtype=tf.float32
+    self.population = backend.to_tensor(
+        [1000.0, 4000.0], dtype=backend.float32
     )  # n_geos=2
-    self.cpmu = tf.constant(
+    self.cpmu = backend.to_tensor(
         [
             [[10.0, 11.0, 12.0], [13.0, 14.0, 15.0]],
             [[16.0, 17.0, 18.0], [19.0, 20.0, 21.0]],
         ],
-        dtype=tf.float32,
+        dtype=backend.float32,
     )  # n_channels=3
-    self.cprf = tf.constant([[[1.0], [1.0]], [[2.0], [2.0]]], dtype=tf.float32)
-    self.frequency = tf.constant(
-        [[[2.0], [2.0]], [[3.0], [3.0]]], dtype=tf.float32
+    self.cprf = backend.to_tensor(
+        [[[1.0], [1.0]], [[2.0], [2.0]]], dtype=backend.float32
+    )
+    self.frequency = backend.to_tensor(
+        [[[2.0], [2.0]], [[3.0], [3.0]]], dtype=backend.float32
     )
     test_input_data = (
         data_test_utils.sample_input_data_non_revenue_revenue_per_kpi(
@@ -4395,14 +4608,33 @@ class OptimizerNewDataTensorsTest(tf.test.TestCase):
   def test_value_error_if_media_without_cpmu(self):
     with self.assertRaisesRegex(ValueError, 'cpmu` must also be provided'):
       self.budget_optimizer.create_optimization_tensors(
-          time=self.time, media=tf.zeros((2, 2, 3))
+          time=self.time, media=backend.zeros((2, 2, 3))
       )
 
   def test_value_error_if_rf_without_cprf(self):
     with self.assertRaisesRegex(ValueError, 'cprf` must also be provided'):
       self.budget_optimizer.create_optimization_tensors(
-          time=self.time,
-          rf_impressions=tf.zeros((2, 2, 1)),
+          time=self.time, rf_impressions=backend.zeros((2, 2, 1))
+      )
+
+  def test_value_error_if_cpmu_is_provided_without_media(self):
+    with self.assertRaisesRegex(
+        ValueError,
+        'If `cpmu` is provided, then one of `media` or `media_spend` must also'
+        ' be provided.',
+    ):
+      self.budget_optimizer.create_optimization_tensors(
+          time=self.time, cpmu=self.cpmu
+      )
+
+  def test_value_error_if_cprf_is_provided_without_rf(self):
+    with self.assertRaisesRegex(
+        ValueError,
+        'If `cprf` is provided, then one of `rf_impressions` or `rf_spend` must'
+        ' also be provided.',
+    ):
+      self.budget_optimizer.create_optimization_tensors(
+          time=self.time, cprf=self.cprf
       )
 
   def test_value_error_if_media_and_media_spend_provided(self):
@@ -4412,8 +4644,8 @@ class OptimizerNewDataTensorsTest(tf.test.TestCase):
       self.budget_optimizer.create_optimization_tensors(
           time=self.time,
           cpmu=self.cpmu,
-          media=tf.zeros((2, 2, 3)),
-          media_spend=tf.zeros((2, 2, 3)),
+          media=backend.zeros((2, 2, 3)),
+          media_spend=backend.zeros((2, 2, 3)),
       )
 
   def test_value_error_if_reach_and_rf_spend_provided(self):
@@ -4423,8 +4655,8 @@ class OptimizerNewDataTensorsTest(tf.test.TestCase):
       self.budget_optimizer.create_optimization_tensors(
           time=self.time,
           cprf=self.cprf,
-          rf_impressions=tf.zeros((2, 2, 1)),
-          rf_spend=tf.zeros((2, 2, 1)),
+          rf_impressions=backend.zeros((2, 2, 1)),
+          rf_spend=backend.zeros((2, 2, 1)),
       )
 
   def test_value_error_if_frequency_not_provided_wo_optimal_frequency(self):
@@ -4436,7 +4668,7 @@ class OptimizerNewDataTensorsTest(tf.test.TestCase):
       self.budget_optimizer.create_optimization_tensors(
           time=self.time,
           cprf=self.cprf,
-          rf_impressions=tf.zeros((2, 2, 1)),
+          rf_impressions=backend.zeros((2, 2, 1)),
           use_optimal_frequency=False,
       )
 
@@ -4449,17 +4681,63 @@ class OptimizerNewDataTensorsTest(tf.test.TestCase):
       self.budget_optimizer.create_optimization_tensors(
           time=self.time,
           cprf=self.cprf,
-          rf_spend=tf.ones_like((2, 2, 1)),
-          frequency=tf.ones_like((2, 2, 1)),
+          rf_spend=backend.ones((2, 2, 1)),
+          frequency=backend.ones((2, 2, 1)),
           use_optimal_frequency=True,
       )
 
   def test_value_error_n_geos_not_matching(self):
     with self.assertRaisesRegex(
-        ValueError, 'with a geo dimension must have the same number of geos'
+        ValueError,
+        'All tensors with a geo dimension must have 2 geos',
     ):
       self.budget_optimizer.create_optimization_tensors(
-          time=self.time, cpmu=self.cpmu, media=tf.zeros((4, 2, 3))
+          time=self.time, cpmu=self.cpmu, media=backend.zeros((4, 2, 3))
+      )
+
+  def test_value_error_n_times_not_matching(self):
+    with self.assertRaisesRegex(
+        ValueError,
+        'All tensors with a time dimension must have 2 times',
+    ):
+      self.budget_optimizer.create_optimization_tensors(
+          time=self.time, cpmu=self.cpmu, media=backend.zeros((2, 3, 3))
+      )
+
+  def test_value_error_n_times_not_matching_2d(self):
+    with self.assertRaisesRegex(
+        ValueError,
+        'All tensors with a time dimension must have 2 times',
+    ):
+      self.budget_optimizer.create_optimization_tensors(
+          time=self.time, cpmu=self.cpmu, media=backend.zeros((3, 3))
+      )
+
+  def test_value_error_n_times_not_matching_revenue_per_kpi_1d(self):
+    with self.assertRaisesRegex(
+        ValueError,
+        'All tensors with a time dimension must have 2 times',
+    ):
+      self.budget_optimizer.create_optimization_tensors(
+          time=self.time, revenue_per_kpi=backend.zeros((3,))
+      )
+
+  def test_value_error_n_times_not_matching_revenue_per_kpi_2d(self):
+    with self.assertRaisesRegex(
+        ValueError,
+        'All tensors with a time dimension must have 2 times',
+    ):
+      self.budget_optimizer.create_optimization_tensors(
+          time=self.time, revenue_per_kpi=backend.zeros((2, 3))
+      )
+
+  def test_value_error_n_geos_not_matching_revenue_per_kpi_2d(self):
+    with self.assertRaisesRegex(
+        ValueError,
+        'All tensors with a geo dimension must have 2 geos',
+    ):
+      self.budget_optimizer.create_optimization_tensors(
+          time=self.time, revenue_per_kpi=backend.zeros((4, 2))
       )
 
   def test_value_error_allocate_by_population_wrong_ndim(self):
@@ -4468,31 +4746,31 @@ class OptimizerNewDataTensorsTest(tf.test.TestCase):
         'Tensor must have 1 less than the required number of dimensions',
     ):
       self.budget_optimizer.create_optimization_tensors(
-          time=self.time, cpmu=self.cpmu, media=tf.zeros((2, 2, 2, 3))
+          time=self.time, cpmu=self.cpmu, media=backend.zeros((2, 2, 2, 3))
       )
 
   def test_media_units_flighting_calculates_spend(self):
-    media = tf.constant(
+    media = backend.to_tensor(
         [
             [[10.0, 10.0, 10.0], [10.0, 10.0, 10.0]],
             [[20.0, 20.0, 20.0], [20.0, 20.0, 20.0]],
         ],
-        dtype=tf.float32,
+        dtype=backend.float32,
     )
     result = self.budget_optimizer.create_optimization_tensors(
         time=self.time, cpmu=self.cpmu, media=media
     )
     expected_spend = media * self.cpmu
-    self.assertAllClose(result.media, media)
-    self.assertAllClose(result.media_spend, expected_spend)
+    backend_test_utils.assert_allclose(result.media, media)
+    backend_test_utils.assert_allclose(result.media_spend, expected_spend)
 
   def test_spend_flighting_calculates_media(self):
-    media_spend = tf.constant(
+    media_spend = backend.to_tensor(
         [
             [[100.0, 110.0, 120.0], [130.0, 140.0, 150.0]],
             [[260.0, 270.0, 280.0], [290.0, 300.0, 310.0]],
         ],
-        dtype=tf.float32,
+        dtype=backend.float32,
     )
     result = self.budget_optimizer.create_optimization_tensors(
         time=self.time, cpmu=self.cpmu, media_spend=media_spend
@@ -4500,12 +4778,12 @@ class OptimizerNewDataTensorsTest(tf.test.TestCase):
     expected_media = media_spend / self.cpmu
     # Avoid the pytype check complaint.
     assert result.media is not None and result.media_spend is not None
-    self.assertAllClose(result.media_spend, media_spend)
-    self.assertAllClose(result.media, expected_media)
+    backend_test_utils.assert_allclose(result.media_spend, media_spend)
+    backend_test_utils.assert_allclose(result.media, expected_media)
 
   def test_population_scaling_for_2d_media_spend(self):
-    media_spend_2d = tf.constant(
-        [[500.0, 500.0, 500.0], [1000.0, 1000.0, 1000.0]], dtype=tf.float32
+    media_spend_2d = backend.to_tensor(
+        [[500.0, 500.0, 500.0], [1000.0, 1000.0, 1000.0]], dtype=backend.float32
     )  # (time, channel)
     result = self.budget_optimizer.create_optimization_tensors(
         time=self.time,
@@ -4514,25 +4792,27 @@ class OptimizerNewDataTensorsTest(tf.test.TestCase):
     )
 
     # Population proportions are [0.2, 0.8] for population [1000, 4000]
-    expected_scaled_spend = tf.constant(
+    expected_scaled_spend = backend.to_tensor(
         [
             [[100.0, 100.0, 100.0], [200.0, 200.0, 200.0]],
             [[400.0, 400.0, 400.0], [800.0, 800.0, 800.0]],
         ],  # Geo 1 (20%)  # Geo 2 (80%)
-        dtype=tf.float32,
+        dtype=backend.float32,
     )
 
     # Avoid the pytype check complaint.
     assert result.media is not None and result.media_spend is not None
     # Check that the sum over geos equals the original 2D tensor
-    self.assertAllClose(
-        tf.reduce_sum(result.media_spend, axis=0), media_spend_2d
+    backend_test_utils.assert_allclose(
+        backend.reduce_sum(result.media_spend, axis=0), media_spend_2d
     )
-    self.assertAllClose(result.media_spend, expected_scaled_spend)
+    backend_test_utils.assert_allclose(
+        result.media_spend, expected_scaled_spend
+    )
     self.assertEqual(result.media.shape, (2, 2, 3))
 
   def test_rf_flighting_with_scaling(self):
-    rf_spend_2d = tf.constant([[100.0], [200.0]], dtype=tf.float32)
+    rf_spend_2d = backend.to_tensor([[100.0], [200.0]], dtype=backend.float32)
     result = self.budget_optimizer.create_optimization_tensors(
         time=self.time,
         cprf=self.cprf,
@@ -4550,12 +4830,14 @@ class OptimizerNewDataTensorsTest(tf.test.TestCase):
     self.assertEqual(result.reach.shape, (2, 2, 1))
 
     calculated_rf_spend = result.reach * result.frequency * self.cprf
-    self.assertAllClose(result.frequency, tf.ones((2, 2, 1)))
-    self.assertAllClose(result.rf_spend, calculated_rf_spend)
+    backend_test_utils.assert_allclose(
+        result.frequency, backend.ones((2, 2, 1))
+    )
+    backend_test_utils.assert_allclose(result.rf_spend, calculated_rf_spend)
 
   def test_frequency_with_expansion(self):
-    frequency = tf.constant(1.0, dtype=tf.float32)
-    rf_spend_2d = tf.constant([[100.0], [200.0]], dtype=tf.float32)
+    frequency = backend.to_tensor(1.0, dtype=backend.float32)
+    rf_spend_2d = backend.to_tensor([[100.0], [200.0]], dtype=backend.float32)
     result = self.budget_optimizer.create_optimization_tensors(
         time=self.time,
         cprf=self.cprf,
@@ -4563,44 +4845,50 @@ class OptimizerNewDataTensorsTest(tf.test.TestCase):
         frequency=frequency,
         use_optimal_frequency=False,
     )
-    expected_scaled_frequency = tf.constant(
+    expected_scaled_frequency = backend.to_tensor(
         [[[1.0], [1.0]], [[1.0], [1.0]]],
-        dtype=tf.float32,
+        dtype=backend.float32,
     )
     # Avoid the pytype check complaint.
     assert result.frequency is not None
     self.assertEqual(result.frequency.shape, (2, 2, 1))
-    self.assertAllClose(result.frequency, expected_scaled_frequency)
+    backend_test_utils.assert_allclose(
+        result.frequency, expected_scaled_frequency
+    )
 
   def test_scalar_revenue_per_kpi_with_expansion(self):
-    revenue_per_kpi = tf.constant(100.0, dtype=tf.float32)
+    revenue_per_kpi = backend.to_tensor(100.0, dtype=backend.float32)
     result = self.budget_optimizer.create_optimization_tensors(
         time=self.time,
         revenue_per_kpi=revenue_per_kpi,
     )
-    expected_scaled_revenue_per_kpi = tf.constant(
+    expected_scaled_revenue_per_kpi = backend.to_tensor(
         [[100.0, 100.0], [100.0, 100.0]],
-        dtype=tf.float32,
+        dtype=backend.float32,
     )
     # Avoid the pytype check complaint.
     assert result.revenue_per_kpi is not None
     self.assertEqual(result.revenue_per_kpi.shape, (2, 2))
-    self.assertAllClose(result.revenue_per_kpi, expected_scaled_revenue_per_kpi)
+    backend_test_utils.assert_allclose(
+        result.revenue_per_kpi, expected_scaled_revenue_per_kpi
+    )
 
   def test_revenue_per_kpi_with_expansion(self):
-    revenue_per_kpi = tf.constant([100.0, 200.0], dtype=tf.float32)
+    revenue_per_kpi = backend.to_tensor([100.0, 200.0], dtype=backend.float32)
     result = self.budget_optimizer.create_optimization_tensors(
         time=self.time,
         revenue_per_kpi=revenue_per_kpi,
     )
-    expected_scaled_revenue_per_kpi = tf.constant(
+    expected_scaled_revenue_per_kpi = backend.to_tensor(
         [[100.0, 200.0], [100.0, 200.0]],
-        dtype=tf.float32,
+        dtype=backend.float32,
     )
     # Avoid the pytype check complaint.
     assert result.revenue_per_kpi is not None
     self.assertEqual(result.revenue_per_kpi.shape, (2, 2))
-    self.assertAllClose(result.revenue_per_kpi, expected_scaled_revenue_per_kpi)
+    backend_test_utils.assert_allclose(
+        result.revenue_per_kpi, expected_scaled_revenue_per_kpi
+    )
 
 
 if __name__ == '__main__':

@@ -19,6 +19,7 @@ used by the Meridian model object.
 """
 
 from __future__ import annotations
+
 from collections.abc import MutableMapping, Sequence
 import dataclasses
 from typing import Any
@@ -26,13 +27,15 @@ import warnings
 
 from meridian import backend
 from meridian import constants
-
 import numpy as np
 
 
 __all__ = [
     'IndependentMultivariateDistribution',
     'PriorDistribution',
+    'distributions_are_equal',
+    'lognormal_dist_from_mean_std',
+    'lognormal_dist_from_range',
 ]
 
 
@@ -174,14 +177,14 @@ class PriorDistribution:
     xi_n: Prior distribution on the hierarchical standard deviation of
       `gamma_gn` which is the coefficient on non-media channel `n` for geo `g`.
       Hierarchy is defined over geos. Default distribution is `HalfNormal(5.0)`.
-    alpha_m: Prior distribution on the `geometric decay` Adstock parameter for
+    alpha_m: Prior distribution on the Adstock decay parameter for media input.
+      Default distribution is `Uniform(0.0, 1.0)`.
+    alpha_rf: Prior distribution on the Adstock decay parameter for RF input.
+      Default distribution is `Uniform(0.0, 1.0)`.
+    alpha_om: Prior distribution on the Adstock decay parameter for organic
       media input. Default distribution is `Uniform(0.0, 1.0)`.
-    alpha_rf: Prior distribution on the `geometric decay` Adstock parameter for
-      RF input. Default distribution is `Uniform(0.0, 1.0)`.
-    alpha_om: Prior distribution on the `geometric decay` Adstock parameter for
-      organic media input. Default distribution is `Uniform(0.0, 1.0)`.
-    alpha_orf: Prior distribution on the `geometric decay` Adstock parameter for
-      organic RF input. Default distribution is `Uniform(0.0, 1.0)`.
+    alpha_orf: Prior distribution on the Adstock decay parameter for organic RF
+      input. Default distribution is `Uniform(0.0, 1.0)`.
     ec_m: Prior distribution on the `half-saturation` Hill parameter for media
       input. Default distribution is `TruncatedNormal(0.8, 0.8, 0.1, 10)`.
     ec_rf: Prior distribution on the `half-saturation` Hill parameter for RF
@@ -771,7 +774,7 @@ class PriorDistribution:
     )
     if (
         not isinstance(self.slope_m, backend.tfd.Deterministic)
-        or (np.isscalar(self.slope_m.loc.numpy()) and self.slope_m.loc != 1.0)
+        or (backend.rank(self.slope_m.loc) == 0 and self.slope_m.loc != 1.0)
         or (
             self.slope_m.batch_shape.as_list()
             and any(x != 1.0 for x in self.slope_m.loc)
@@ -790,7 +793,7 @@ class PriorDistribution:
     )
     if (
         not isinstance(self.slope_om, backend.tfd.Deterministic)
-        or (np.isscalar(self.slope_om.loc.numpy()) and self.slope_om.loc != 1.0)
+        or (backend.rank(self.slope_om.loc) == 0 and self.slope_om.loc != 1.0)
         or (
             self.slope_om.batch_shape.as_list()
             and any(x != 1.0 for x in self.slope_om.loc)
@@ -999,8 +1002,7 @@ class IndependentMultivariateDistribution(backend.tfd.Distribution):
     """Check for deterministic distributions and raise an error if found."""
 
     if any(
-        isinstance(dist, backend.tfd.Deterministic)
-        for dist in distributions
+        isinstance(dist, backend.tfd.Deterministic) for dist in distributions
     ):
       raise ValueError(
           f'{self.__class__.__name__} cannot contain `Deterministic` '
@@ -1028,9 +1030,7 @@ class IndependentMultivariateDistribution(backend.tfd.Distribution):
         [dist.batch_shape_tensor() for dist in self._distributions],
         axis=0,
     )
-    return backend.reduce_sum(
-        distribution_batch_shape_tensors, keepdims=True
-    )
+    return backend.reduce_sum(distribution_batch_shape_tensors, keepdims=True)
 
   def _batch_shape(self):
     return backend.TensorShape(sum(self._distribution_batch_shapes))
@@ -1042,10 +1042,7 @@ class IndependentMultivariateDistribution(backend.tfd.Distribution):
 
   def _quantile(self, value):
     value = self._broadcast_value(value)
-    split_value = backend.split(
-        value,
-        self._distribution_batch_shapes, axis=-1
-        )
+    split_value = backend.split(value, self._distribution_batch_shapes, axis=-1)
     quantiles = [
         dist.quantile(sv) for dist, sv in zip(self._distributions, split_value)
     ]
@@ -1054,11 +1051,7 @@ class IndependentMultivariateDistribution(backend.tfd.Distribution):
 
   def _log_prob(self, value):
     value = self._broadcast_value(value)
-    split_value = backend.split(
-        value,
-        self._distribution_batch_shapes,
-        axis=-1
-        )
+    split_value = backend.split(value, self._distribution_batch_shapes, axis=-1)
     log_probs = [
         dist.log_prob(sv) for dist, sv in zip(self._distributions, split_value)
     ]
@@ -1067,11 +1060,7 @@ class IndependentMultivariateDistribution(backend.tfd.Distribution):
 
   def _log_cdf(self, value):
     value = self._broadcast_value(value)
-    split_value = backend.split(
-        value,
-        self._distribution_batch_shapes,
-        axis=-1
-        )
+    split_value = backend.split(value, self._distribution_batch_shapes, axis=-1)
 
     log_cdfs = [
         dist.log_cdf(sv) for dist, sv in zip(self._distributions, split_value)
@@ -1133,6 +1122,124 @@ class IndependentMultivariateDistribution(backend.tfd.Distribution):
         batch_shapes.append(dist_batch_shape)
 
     return batch_shapes
+
+
+def distributions_are_equal(
+    a: backend.tfd.Distribution, b: backend.tfd.Distribution
+) -> bool:
+  """Determine if two distributions are equal."""
+  if type(a) != type(b):  # pylint: disable=unidiomatic-typecheck
+    return False
+
+  a_params = a.parameters.copy()
+  b_params = b.parameters.copy()
+
+  if constants.DISTRIBUTION in a_params and constants.DISTRIBUTION in b_params:
+    if not distributions_are_equal(
+        a_params[constants.DISTRIBUTION], b_params[constants.DISTRIBUTION]
+    ):
+      return False
+    del a_params[constants.DISTRIBUTION]
+    del b_params[constants.DISTRIBUTION]
+
+  if constants.DISTRIBUTION in a_params or constants.DISTRIBUTION in b_params:
+    return False
+
+  if a_params.keys() != b_params.keys():
+    return False
+
+  for key in a_params.keys():
+    if isinstance(
+        a_params[key], (backend.Tensor, np.ndarray, float, int)
+    ) and isinstance(b_params[key], (backend.Tensor, np.ndarray, float, int)):
+      if not backend.allclose(a_params[key], b_params[key]):
+        return False
+    else:
+      if a_params[key] != b_params[key]:
+        return False
+
+  return True
+
+
+def lognormal_dist_from_mean_std(
+    mean: float | Sequence[float], std: float | Sequence[float]
+) -> backend.tfd.LogNormal:
+  """Define a lognormal distribution from its mean and standard deviation.
+
+  This function parameterizes lognormal distributions by their mean and
+  standard deviation.
+
+  Args:
+    mean: A float or array-like object defining the distribution mean. Must be
+      positive.
+    std: A float or array-like object defining the distribution standard
+      deviation. Must be non-negative.
+
+  Returns:
+    A `backend.tfd.LogNormal` object with the input mean and standard deviation.
+  """
+
+  mean = np.asarray(mean)
+  std = np.asarray(std)
+
+  mu = np.log(mean) - 0.5 * np.log((std / mean) ** 2 + 1)
+  sigma = np.sqrt(np.log((std / mean) ** 2 + 1))
+
+  return backend.tfd.LogNormal(mu, sigma)
+
+
+def lognormal_dist_from_range(
+    low: float | Sequence[float],
+    high: float | Sequence[float],
+    mass_percent: float | Sequence[float] = 0.95,
+) -> backend.tfd.LogNormal:
+  """Define a LogNormal distribution from a specified range.
+
+  This function parameterizes lognormal distributions by the bounds of a range,
+  so that the specified probability mass falls within the bounds defined by
+  `low` and `high`. The probability mass is symmetric about the median. For
+  example, to define a lognormal distribution with a 95% probability mass of
+  (1, 10), use:
+
+  ```python
+  lognormal = lognormal_dist_from_range(1.0, 10.0, mass_percent=0.95)
+  ```
+
+  Args:
+    low: Float or array-like denoting the lower bound of the range. Values must
+      be non-negative.
+    high: Float or array-like denoting the upper bound of range. Values must be
+      non-negative.
+    mass_percent: Float or array-like denoting the probability mass. Values must
+      be between 0 and 1 (exclusive). Default: 0.95.
+
+  Returns:
+    A `backend.tfd.LogNormal` object with the input percentage mass falling
+      within the given range.
+  """
+  low = np.asarray(low)
+  high = np.asarray(high)
+  mass_percent = np.asarray(mass_percent)
+
+  if not ((0.0 < low).all() and (low < high).all()):  # pytype: disable=attribute-error
+    raise ValueError("'low' and 'high' values must be non-negative and satisfy "
+                     "high > low.")
+
+  if not ((0.0 < mass_percent).all() and (mass_percent < 1.0).all()):  # pytype: disable=attribute-error
+    raise ValueError(
+        "'mass_percent' values must be between 0 and 1, exclusive."
+        )
+
+  normal = backend.tfd.Normal(0, 1)
+  mass_lower = 0.5 - (mass_percent / 2)
+  mass_upper = 0.5 + (mass_percent / 2)
+
+  sigma = np.log(high / low) / (
+      normal.quantile(mass_upper) - normal.quantile(mass_lower)
+  )
+  mu = np.log(high) - normal.quantile(mass_upper) * sigma
+
+  return backend.tfd.LogNormal(mu, sigma)
 
 
 def _convert_to_deterministic_0_distribution(
@@ -1198,43 +1305,6 @@ def _get_total_media_contribution_prior(
   return backend.tfd.LogNormal(lognormal_mu, lognormal_sigma, name=name)
 
 
-def distributions_are_equal(
-    a: backend.tfd.Distribution, b: backend.tfd.Distribution
-) -> bool:
-  """Determine if two distributions are equal."""
-  if type(a) != type(b):  # pylint: disable=unidiomatic-typecheck
-    return False
-
-  a_params = a.parameters.copy()
-  b_params = b.parameters.copy()
-
-  if constants.DISTRIBUTION in a_params and constants.DISTRIBUTION in b_params:
-    if not distributions_are_equal(
-        a_params[constants.DISTRIBUTION], b_params[constants.DISTRIBUTION]
-    ):
-      return False
-    del a_params[constants.DISTRIBUTION]
-    del b_params[constants.DISTRIBUTION]
-
-  if constants.DISTRIBUTION in a_params or constants.DISTRIBUTION in b_params:
-    return False
-
-  if a_params.keys() != b_params.keys():
-    return False
-
-  for key in a_params.keys():
-    if isinstance(
-        a_params[key], (backend.Tensor, np.ndarray, float, int)
-    ) and isinstance(b_params[key], (backend.Tensor, np.ndarray, float, int)):
-      if not backend.allclose(a_params[key], b_params[key]):
-        return False
-    else:
-      if a_params[key] != b_params[key]:
-        return False
-
-  return True
-
-
 def _validate_support(
     parameter_name: str,
     tfp_dist: backend.tfp.distributions.Distribution,
@@ -1256,26 +1326,31 @@ def _validate_support(
   """
   # Note that `tfp.distributions.BatchBroadcast` objects have a `distribution`
   # attribute that points to a `tfp.distributions.Distribution` object.
-  if isinstance(tfp_dist, backend.tfp.distributions.BatchBroadcast):
+  if isinstance(tfp_dist, backend.tfd.BatchBroadcast):
     tfp_dist = tfp_dist.distribution
   # Note that `tfp.distributions.Deterministic` does not have a `quantile`
   # method implemented, so the min and max values must be extracted from the
   # `loc` attribute instead.
-  if isinstance(
-      tfp_dist,
-      backend.tfp.python.distributions.deterministic.Deterministic
-  ):
+  if isinstance(tfp_dist, backend.tfd.Deterministic):
     support_min_vals = tfp_dist.loc
     support_max_vals = tfp_dist.loc
     for i in (0, 1):
-      if (
-          prevent_deterministic_prior_at_bounds[i]
-          and np.any(tfp_dist.loc == bounds[i])
+      if prevent_deterministic_prior_at_bounds[i] and np.any(
+          tfp_dist.loc == bounds[i]
       ):
         raise ValueError(
             f'{parameter_name} was assigned a point mass (deterministic) prior'
             f' at {bounds[i]}, which is not allowed.'
         )
+  elif isinstance(tfp_dist, backend.tfd.TruncatedNormal):
+    # TruncatedNormal quantile method is not reliable, particularly when the
+    # `low` or `high` value falls into extreme percentile of the untruncated
+    # distribution. Note that
+    # `TruncatedNormal.experimental_default_event_space_bijector()([-inf, inf])`
+    # returns the correct support range, so this method could be used if the
+    # `quantile` method is found to be unreliable for other distributions.
+    support_min_vals = tfp_dist.low
+    support_max_vals = tfp_dist.high
   else:
     try:
       support_min_vals = tfp_dist.quantile(0)
@@ -1283,9 +1358,9 @@ def _validate_support(
     except (AttributeError, NotImplementedError):
       warnings.warn(
           f'The prior distribution for {parameter_name} does not have a'
-          f' `quantile` method implemented, so the support range validation'
+          ' `quantile` method implemented, so the support range validation'
           f' was skipped. Confirm that your prior for {parameter_name} is'
-          f' appropriate.'
+          ' appropriate.'
       )
       return
   if np.any(support_min_vals < bounds[0]):
@@ -1298,6 +1373,7 @@ def _validate_support(
         f'{parameter_name} was assigned a prior distribution that allows values'
         f' greater than the parameter maximum {bounds[1]}.'
     )
+
 
 # Dictionary of parameters that have a limited parameters space. The tuple
 # contains the lower and upper bounds, respectively.
