@@ -20,6 +20,7 @@ from meridian import constants
 from meridian.backend import test_utils
 from meridian.model import model
 from meridian.model import model_test_data
+from meridian.model.eda import constants as eda_constants
 from meridian.model.eda import eda_engine
 from meridian.model.eda import eda_outcome
 from meridian.model.eda import eda_spec
@@ -204,6 +205,35 @@ class EDAEngineTest(
     mock_scaling_transformer.forward.side_effect = (
         lambda x: backend.cast(x, dtype=backend.float32)
         * self.mock_scale_factor
+    )
+
+  def _mock_critical_checks(
+      self, mock_results: dict[str, eda_outcome.EDAOutcome | Exception]
+  ):
+    """Mocks critical EDA checks with specified return values or exceptions."""
+    for check_name, result in mock_results.items():
+      patcher = mock.patch.object(
+          eda_engine.EDAEngine, check_name, autospec=True
+      )
+      mock_check = self.enter_context(patcher)
+      if isinstance(result, Exception):
+        mock_check.side_effect = result
+      else:
+        mock_check.return_value = result
+
+  def _create_eda_outcome(
+      self,
+      check_type: eda_outcome.EDACheckType,
+      severity: eda_outcome.EDASeverity,
+  ) -> eda_outcome.EDAOutcome:
+    """Creates an EDAOutcome with a single finding."""
+    explanation = f"{check_type.name}: {severity.name}"
+    return eda_outcome.EDAOutcome(
+        check_type=check_type,
+        findings=[
+            eda_outcome.EDAFinding(severity=severity, explanation=explanation)
+        ],
+        analysis_artifacts=[],
     )
 
   def _mock_eda_engine_property(self, property_name, return_value):
@@ -2729,6 +2759,632 @@ class EDAEngineTest(
           expected_dims[var],
       )
 
+  # --- Test cases for all_spend_ds ---
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="media_only",
+          input_data_fixture="input_data_with_media_only",
+          expected_vars=[constants.MEDIA_SPEND],
+          expected_dims={
+              constants.MEDIA_SPEND: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ]
+          },
+      ),
+      dict(
+          testcase_name="rf_only",
+          input_data_fixture="input_data_with_rf_only",
+          expected_vars=[constants.RF_SPEND],
+          expected_dims={
+              constants.RF_SPEND: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ]
+          },
+      ),
+      dict(
+          testcase_name="media_rf",
+          input_data_fixture="input_data_with_media_and_rf",
+          expected_vars=[
+              constants.RF_SPEND,
+              constants.MEDIA_SPEND,
+          ],
+          expected_dims={
+              constants.MEDIA_SPEND: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+              constants.RF_SPEND: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ],
+          },
+      ),
+      dict(
+          testcase_name="national_media_only",
+          input_data_fixture="national_input_data_media_only",
+          expected_vars=[constants.MEDIA_SPEND],
+          expected_dims={
+              constants.MEDIA_SPEND: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ]
+          },
+      ),
+      dict(
+          testcase_name="national_rf_only",
+          input_data_fixture="national_input_data_rf_only",
+          expected_vars=[constants.RF_SPEND],
+          expected_dims={
+              constants.RF_SPEND: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ]
+          },
+      ),
+      dict(
+          testcase_name="national_media_rf",
+          input_data_fixture="national_input_data_media_and_rf",
+          expected_vars=[
+              constants.RF_SPEND,
+              constants.MEDIA_SPEND,
+          ],
+          expected_dims={
+              constants.MEDIA_SPEND: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+              constants.RF_SPEND: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ],
+          },
+      ),
+  )
+  def test_all_spend_ds(self, input_data_fixture, expected_vars, expected_dims):
+    meridian = model.Meridian(getattr(self, input_data_fixture))
+    engine = eda_engine.EDAEngine(meridian)
+    tc_scaled_ds = engine.all_spend_ds
+    self.assertIsInstance(tc_scaled_ds, xr.Dataset)
+
+    self.assertCountEqual(tc_scaled_ds.data_vars.keys(), expected_vars)
+
+    for var, dims in expected_dims.items():
+      self.assertCountEqual(list(tc_scaled_ds[var].dims), dims)
+
+  # --- Test cases for national_all_spend_ds ---
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="national_media_only",
+          input_data_fixture="national_input_data_media_only",
+          expected_vars=[constants.NATIONAL_MEDIA_SPEND],
+          expected_dims={
+              constants.NATIONAL_MEDIA_SPEND: [
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ]
+          },
+      ),
+      dict(
+          testcase_name="national_rf_only",
+          input_data_fixture="national_input_data_rf_only",
+          expected_vars=[constants.NATIONAL_RF_SPEND],
+          expected_dims={
+              constants.NATIONAL_RF_SPEND: [
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ]
+          },
+      ),
+      dict(
+          testcase_name="national_media_rf",
+          input_data_fixture="national_input_data_media_and_rf",
+          expected_vars=[
+              constants.NATIONAL_RF_SPEND,
+              constants.NATIONAL_MEDIA_SPEND,
+          ],
+          expected_dims={
+              constants.NATIONAL_MEDIA_SPEND: [
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+              constants.NATIONAL_RF_SPEND: [
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ],
+          },
+      ),
+      dict(
+          testcase_name="media_only",
+          input_data_fixture="input_data_with_media_only",
+          expected_vars=[constants.NATIONAL_MEDIA_SPEND],
+          expected_dims={
+              constants.NATIONAL_MEDIA_SPEND: [
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ]
+          },
+      ),
+      dict(
+          testcase_name="rf_only",
+          input_data_fixture="input_data_with_rf_only",
+          expected_vars=[constants.NATIONAL_RF_SPEND],
+          expected_dims={
+              constants.NATIONAL_RF_SPEND: [
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ]
+          },
+      ),
+      dict(
+          testcase_name="media_rf",
+          input_data_fixture="input_data_with_media_and_rf",
+          expected_vars=[
+              constants.NATIONAL_RF_SPEND,
+              constants.NATIONAL_MEDIA_SPEND,
+          ],
+          expected_dims={
+              constants.NATIONAL_MEDIA_SPEND: [
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+              constants.NATIONAL_RF_SPEND: [
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ],
+          },
+      ),
+  )
+  def test_national_all_spend_ds(
+      self, input_data_fixture, expected_vars, expected_dims
+  ):
+    meridian = model.Meridian(getattr(self, input_data_fixture))
+    engine = eda_engine.EDAEngine(meridian)
+    national_all_spend_ds = engine.national_all_spend_ds
+    self.assertIsInstance(national_all_spend_ds, xr.Dataset)
+
+    self.assertCountEqual(
+        national_all_spend_ds.data_vars.keys(),
+        expected_vars,
+    )
+
+    for var in expected_vars:
+      self.assertCountEqual(
+          list(national_all_spend_ds[var].dims),
+          expected_dims[var],
+      )
+
+  # --- Test cases for treatments_without_non_media_scaled_ds ---
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="media_only",
+          input_data_fixture="input_data_with_media_only",
+          expected_vars=[constants.MEDIA_SCALED],
+          expected_dims={
+              constants.MEDIA_SCALED: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+          },
+      ),
+      dict(
+          testcase_name="media_rf",
+          input_data_fixture="input_data_with_media_and_rf",
+          expected_vars=[
+              constants.MEDIA_SCALED,
+              constants.RF_IMPRESSIONS_SCALED,
+          ],
+          expected_dims={
+              constants.MEDIA_SCALED: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+              constants.RF_IMPRESSIONS_SCALED: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ],
+          },
+      ),
+      dict(
+          testcase_name="all_channels",
+          input_data_fixture="input_data_non_media_and_organic",
+          expected_vars=[
+              constants.MEDIA_SCALED,
+              constants.RF_IMPRESSIONS_SCALED,
+              constants.ORGANIC_MEDIA_SCALED,
+              constants.ORGANIC_RF_IMPRESSIONS_SCALED,
+          ],
+          expected_dims={
+              constants.MEDIA_SCALED: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+              constants.RF_IMPRESSIONS_SCALED: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ],
+              constants.ORGANIC_MEDIA_SCALED: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.ORGANIC_MEDIA_CHANNEL,
+              ],
+              constants.ORGANIC_RF_IMPRESSIONS_SCALED: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.ORGANIC_RF_CHANNEL,
+              ],
+          },
+      ),
+      dict(
+          testcase_name="when_national_media_rf",
+          input_data_fixture="national_input_data_media_and_rf",
+          expected_vars=[
+              constants.MEDIA_SCALED,
+              constants.RF_IMPRESSIONS_SCALED,
+          ],
+          expected_dims={
+              constants.MEDIA_SCALED: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+              constants.RF_IMPRESSIONS_SCALED: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ],
+          },
+      ),
+      dict(
+          testcase_name="when_national_all_channels",
+          input_data_fixture="national_input_data_non_media_and_organic",
+          expected_vars=[
+              constants.MEDIA_SCALED,
+              constants.RF_IMPRESSIONS_SCALED,
+              constants.ORGANIC_MEDIA_SCALED,
+              constants.ORGANIC_RF_IMPRESSIONS_SCALED,
+          ],
+          expected_dims={
+              constants.MEDIA_SCALED: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+              constants.RF_IMPRESSIONS_SCALED: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ],
+              constants.ORGANIC_MEDIA_SCALED: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.ORGANIC_MEDIA_CHANNEL,
+              ],
+              constants.ORGANIC_RF_IMPRESSIONS_SCALED: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.ORGANIC_RF_CHANNEL,
+              ],
+          },
+      ),
+  )
+  def test_treatments_without_non_media_scaled_ds(
+      self, input_data_fixture, expected_vars, expected_dims
+  ):
+    meridian = model.Meridian(getattr(self, input_data_fixture))
+    engine = eda_engine.EDAEngine(meridian)
+    treatments_scaled_ds = engine.treatments_without_non_media_scaled_ds
+    self.assertIsInstance(treatments_scaled_ds, xr.Dataset)
+
+    self.assertCountEqual(treatments_scaled_ds.data_vars.keys(), expected_vars)
+
+    for var, dims in expected_dims.items():
+      self.assertCountEqual(list(treatments_scaled_ds[var].dims), dims)
+
+  # --- Test cases for national_treatments_without_non_media_scaled_ds ---
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="media_only",
+          input_data_fixture="input_data_with_media_only",
+          expected_vars=[
+              constants.NATIONAL_MEDIA_SCALED,
+          ],
+          expected_dims={
+              constants.NATIONAL_MEDIA_SCALED: [
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+          },
+      ),
+      dict(
+          testcase_name="media_rf",
+          input_data_fixture="input_data_with_media_and_rf",
+          expected_vars=[
+              constants.NATIONAL_MEDIA_SCALED,
+              constants.NATIONAL_RF_IMPRESSIONS_SCALED,
+          ],
+          expected_dims={
+              constants.NATIONAL_MEDIA_SCALED: [
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+              constants.NATIONAL_RF_IMPRESSIONS_SCALED: [
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ],
+          },
+      ),
+      dict(
+          testcase_name="all_channels",
+          input_data_fixture="input_data_non_media_and_organic",
+          expected_vars=[
+              constants.NATIONAL_MEDIA_SCALED,
+              constants.NATIONAL_RF_IMPRESSIONS_SCALED,
+              constants.NATIONAL_ORGANIC_MEDIA_SCALED,
+              constants.NATIONAL_ORGANIC_RF_IMPRESSIONS_SCALED,
+          ],
+          expected_dims={
+              constants.NATIONAL_MEDIA_SCALED: [
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+              constants.NATIONAL_RF_IMPRESSIONS_SCALED: [
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ],
+              constants.NATIONAL_ORGANIC_MEDIA_SCALED: [
+                  constants.TIME,
+                  constants.ORGANIC_MEDIA_CHANNEL,
+              ],
+              constants.NATIONAL_ORGANIC_RF_IMPRESSIONS_SCALED: [
+                  constants.TIME,
+                  constants.ORGANIC_RF_CHANNEL,
+              ],
+          },
+      ),
+      dict(
+          testcase_name="national_media_rf",
+          input_data_fixture="national_input_data_media_and_rf",
+          expected_vars=[
+              constants.NATIONAL_MEDIA_SCALED,
+              constants.NATIONAL_RF_IMPRESSIONS_SCALED,
+          ],
+          expected_dims={
+              constants.NATIONAL_MEDIA_SCALED: [
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+              constants.NATIONAL_RF_IMPRESSIONS_SCALED: [
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ],
+          },
+      ),
+      dict(
+          testcase_name="national_all_channels",
+          input_data_fixture="national_input_data_non_media_and_organic",
+          expected_vars=[
+              constants.NATIONAL_MEDIA_SCALED,
+              constants.NATIONAL_RF_IMPRESSIONS_SCALED,
+              constants.NATIONAL_ORGANIC_MEDIA_SCALED,
+              constants.NATIONAL_ORGANIC_RF_IMPRESSIONS_SCALED,
+          ],
+          expected_dims={
+              constants.NATIONAL_MEDIA_SCALED: [
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+              constants.NATIONAL_RF_IMPRESSIONS_SCALED: [
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ],
+              constants.NATIONAL_ORGANIC_MEDIA_SCALED: [
+                  constants.TIME,
+                  constants.ORGANIC_MEDIA_CHANNEL,
+              ],
+              constants.NATIONAL_ORGANIC_RF_IMPRESSIONS_SCALED: [
+                  constants.TIME,
+                  constants.ORGANIC_RF_CHANNEL,
+              ],
+          },
+      ),
+  )
+  def test_national_treatments_without_non_media_scaled_ds(
+      self, input_data_fixture, expected_vars, expected_dims
+  ):
+    meridian = model.Meridian(getattr(self, input_data_fixture))
+    engine = eda_engine.EDAEngine(meridian)
+    national_treatments_scaled_ds = (
+        engine.national_treatments_without_non_media_scaled_ds
+    )
+    self.assertIsInstance(national_treatments_scaled_ds, xr.Dataset)
+
+    self.assertCountEqual(
+        national_treatments_scaled_ds.data_vars.keys(),
+        expected_vars,
+    )
+
+    for var in expected_vars:
+      self.assertCountEqual(
+          list(national_treatments_scaled_ds[var].dims),
+          expected_dims[var],
+      )
+
+  # --- Test cases for paid_raw_impressions_ds ---
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="media_only",
+          input_data_fixture="input_data_with_media_only",
+          expected_vars=[constants.MEDIA],
+          expected_dims={
+              constants.MEDIA: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ]
+          },
+      ),
+      dict(
+          testcase_name="rf_only",
+          input_data_fixture="input_data_with_rf_only",
+          expected_vars=[constants.RF_IMPRESSIONS],
+          expected_dims={
+              constants.RF_IMPRESSIONS: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ]
+          },
+      ),
+      dict(
+          testcase_name="media_rf",
+          input_data_fixture="input_data_with_media_and_rf",
+          expected_vars=[
+              constants.MEDIA,
+              constants.RF_IMPRESSIONS,
+          ],
+          expected_dims={
+              constants.MEDIA: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+              constants.RF_IMPRESSIONS: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ],
+          },
+      ),
+      dict(
+          testcase_name="national_media_rf",
+          input_data_fixture="national_input_data_media_and_rf",
+          expected_vars=[
+              constants.MEDIA,
+              constants.RF_IMPRESSIONS,
+          ],
+          expected_dims={
+              constants.MEDIA: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+              constants.RF_IMPRESSIONS: [
+                  constants.GEO,
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ],
+          },
+      ),
+  )
+  def test_paid_raw_impressions_ds(
+      self, input_data_fixture, expected_vars, expected_dims
+  ):
+    meridian = model.Meridian(getattr(self, input_data_fixture))
+    engine = eda_engine.EDAEngine(meridian)
+    paid_raw_impressions_ds = engine.paid_raw_impressions_ds
+    self.assertIsInstance(paid_raw_impressions_ds, xr.Dataset)
+
+    self.assertCountEqual(
+        paid_raw_impressions_ds.data_vars.keys(), expected_vars
+    )
+
+    for var, dims in expected_dims.items():
+      self.assertCountEqual(list(paid_raw_impressions_ds[var].dims), dims)
+
+  # --- Test cases for national_paid_raw_impressions_ds ---
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="media_only",
+          input_data_fixture="input_data_with_media_only",
+          expected_vars=[constants.NATIONAL_MEDIA],
+          expected_dims={
+              constants.NATIONAL_MEDIA: [
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ]
+          },
+      ),
+      dict(
+          testcase_name="rf_only",
+          input_data_fixture="input_data_with_rf_only",
+          expected_vars=[constants.NATIONAL_RF_IMPRESSIONS],
+          expected_dims={
+              constants.NATIONAL_RF_IMPRESSIONS: [
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ]
+          },
+      ),
+      dict(
+          testcase_name="media_rf",
+          input_data_fixture="input_data_with_media_and_rf",
+          expected_vars=[
+              constants.NATIONAL_MEDIA,
+              constants.NATIONAL_RF_IMPRESSIONS,
+          ],
+          expected_dims={
+              constants.NATIONAL_MEDIA: [
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+              constants.NATIONAL_RF_IMPRESSIONS: [
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ],
+          },
+      ),
+      dict(
+          testcase_name="national_media_rf",
+          input_data_fixture="national_input_data_media_and_rf",
+          expected_vars=[
+              constants.NATIONAL_MEDIA,
+              constants.NATIONAL_RF_IMPRESSIONS,
+          ],
+          expected_dims={
+              constants.NATIONAL_MEDIA: [
+                  constants.TIME,
+                  constants.MEDIA_CHANNEL,
+              ],
+              constants.NATIONAL_RF_IMPRESSIONS: [
+                  constants.TIME,
+                  constants.RF_CHANNEL,
+              ],
+          },
+      ),
+  )
+  def test_national_paid_raw_impressions_ds(
+      self, input_data_fixture, expected_vars, expected_dims
+  ):
+    meridian = model.Meridian(getattr(self, input_data_fixture))
+    engine = eda_engine.EDAEngine(meridian)
+    national_paid_raw_impressions_ds = engine.national_paid_raw_impressions_ds
+    self.assertIsInstance(national_paid_raw_impressions_ds, xr.Dataset)
+
+    self.assertCountEqual(
+        national_paid_raw_impressions_ds.data_vars.keys(),
+        expected_vars,
+    )
+
+    for var, dims in expected_dims.items():
+      self.assertCountEqual(
+          list(national_paid_raw_impressions_ds[var].dims), dims
+      )
+
   # --- Test cases for all_reach_scaled_da ---
   @parameterized.named_parameters(
       dict(
@@ -3346,7 +4002,9 @@ class EDAEngineTest(
     self._mock_eda_engine_property("treatment_control_scaled_ds", mock_ds)
     outcome = engine.check_geo_pairwise_corr()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORR)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORRELATION
+    )
     self.assertLen(outcome.findings, 1)
     self.assertLen(outcome.analysis_artifacts, 2)
 
@@ -3391,7 +4049,9 @@ class EDAEngineTest(
     self._mock_eda_engine_property("treatment_control_scaled_ds", mock_ds)
     outcome = engine.check_geo_pairwise_corr()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORR)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORRELATION
+    )
     self.assertLen(outcome.findings, 1)
     self.assertLen(outcome.analysis_artifacts, 2)
 
@@ -3426,7 +4086,9 @@ class EDAEngineTest(
     self._mock_eda_engine_property("treatment_control_scaled_ds", mock_ds)
     outcome = engine.check_geo_pairwise_corr()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORR)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORRELATION
+    )
     self.assertLen(outcome.findings, 1)
     self.assertLen(outcome.analysis_artifacts, 2)
 
@@ -3479,7 +4141,9 @@ class EDAEngineTest(
     self._mock_eda_engine_property("treatment_control_scaled_ds", mock_ds)
     outcome = engine.check_geo_pairwise_corr()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORR)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORRELATION
+    )
     self.assertLen(outcome.findings, 1)
     self.assertLen(outcome.analysis_artifacts, 2)
 
@@ -3525,7 +4189,9 @@ class EDAEngineTest(
     self._mock_eda_engine_property("treatment_control_scaled_ds", mock_ds)
     outcome = engine.check_geo_pairwise_corr()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORR)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORRELATION
+    )
     self.assertLen(outcome.findings, 1)
     self.assertLen(outcome.analysis_artifacts, 2)
 
@@ -3549,7 +4215,9 @@ class EDAEngineTest(
     engine = eda_engine.EDAEngine(meridian)
     outcome = engine.check_geo_pairwise_corr()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORR)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORRELATION
+    )
     self.assertLen(outcome.analysis_artifacts, 2)
 
     for artifact in outcome.analysis_artifacts:
@@ -3587,7 +4255,9 @@ class EDAEngineTest(
     self._mock_eda_engine_property("treatment_control_scaled_ds", mock_ds)
     outcome = engine.check_geo_pairwise_corr()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORR)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORRELATION
+    )
     expected_overall_corr = np.corrcoef(
         media_data.flatten(), control_data.flatten()
     )[0, 1]
@@ -3650,7 +4320,9 @@ class EDAEngineTest(
     )
     outcome = engine.check_national_pairwise_corr()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORR)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORRELATION
+    )
     self.assertLen(outcome.findings, 1)
     self.assertLen(outcome.analysis_artifacts, 1)
 
@@ -3690,7 +4362,9 @@ class EDAEngineTest(
     )
     outcome = engine.check_national_pairwise_corr()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORR)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORRELATION
+    )
     self.assertLen(outcome.findings, 1)
     self.assertLen(outcome.analysis_artifacts, 1)
 
@@ -3714,7 +4388,9 @@ class EDAEngineTest(
     engine = eda_engine.EDAEngine(meridian)
     outcome = engine.check_national_pairwise_corr()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORR)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORRELATION
+    )
     self.assertLen(outcome.analysis_artifacts, 1)
     artifact = outcome.analysis_artifacts[0]
     self.assertEqual(artifact.level, eda_outcome.AnalysisLevel.NATIONAL)
@@ -3746,7 +4422,9 @@ class EDAEngineTest(
     )
     outcome = engine.check_national_pairwise_corr()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORR)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.PAIRWISE_CORRELATION
+    )
     expected_corr = np.corrcoef(media_data.flatten(), control_data.flatten())[
         0, 1
     ]
@@ -3775,7 +4453,9 @@ class EDAEngineTest(
     engine = eda_engine.EDAEngine(meridian)
     outcome = engine.check_geo_std()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.STD)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.STANDARD_DEVIATION
+    )
     self.assertLen(outcome.analysis_artifacts, 4)
 
     for artifact in outcome.analysis_artifacts:
@@ -3812,7 +4492,9 @@ class EDAEngineTest(
     self._mock_eda_engine_property("kpi_scaled_da", mock_kpi_da)
     outcome = engine.check_geo_std()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.STD)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.STANDARD_DEVIATION
+    )
     self.assertLen(outcome.analysis_artifacts, 2)
     kpi_artifact = next(
         artifact
@@ -3856,7 +4538,9 @@ class EDAEngineTest(
     self._mock_eda_engine_property("kpi_scaled_da", mock_kpi_da)
     outcome = engine.check_geo_std()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.STD)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.STANDARD_DEVIATION
+    )
     self.assertLen(outcome.analysis_artifacts, 2)
     kpi_artifact = next(
         artifact
@@ -3895,7 +4579,9 @@ class EDAEngineTest(
     self._mock_eda_engine_property("all_reach_scaled_da", None)
     self._mock_eda_engine_property("all_freq_da", None)
     outcome = engine.check_geo_std()
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.STD)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.STANDARD_DEVIATION
+    )
     self.assertLen(outcome.findings, 1)
     self.assertEqual(outcome.findings[0].severity, eda_outcome.EDASeverity.INFO)
     self.assertIn(
@@ -4010,7 +4696,9 @@ class EDAEngineTest(
       self._mock_eda_engine_property("all_freq_da", None)
 
     outcome = engine.check_geo_std()
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.STD)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.STANDARD_DEVIATION
+    )
     self.assertLen(outcome.findings, 1)
     self.assertEqual(
         outcome.findings[0].severity, eda_outcome.EDASeverity.ATTENTION
@@ -4037,7 +4725,9 @@ class EDAEngineTest(
     self._mock_eda_engine_property("all_reach_scaled_da", None)
     self._mock_eda_engine_property("all_freq_da", None)
     outcome = engine.check_geo_std()
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.STD)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.STANDARD_DEVIATION
+    )
     self.assertLen(outcome.analysis_artifacts, 2)
     variables = [artifact.variable for artifact in outcome.analysis_artifacts]
     self.assertCountEqual(
@@ -4050,7 +4740,9 @@ class EDAEngineTest(
     engine = eda_engine.EDAEngine(meridian)
     outcome = engine.check_national_std()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.STD)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.STANDARD_DEVIATION
+    )
     self.assertLen(outcome.analysis_artifacts, 4)
 
     for artifact in outcome.analysis_artifacts:
@@ -4087,7 +4779,9 @@ class EDAEngineTest(
     self._mock_eda_engine_property("national_kpi_scaled_da", mock_kpi_da)
     outcome = engine.check_national_std()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.STD)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.STANDARD_DEVIATION
+    )
     self.assertLen(outcome.analysis_artifacts, 4)
     kpi_artifact = next(
         artifact
@@ -4131,7 +4825,9 @@ class EDAEngineTest(
     self._mock_eda_engine_property("national_kpi_scaled_da", mock_kpi_da)
     outcome = engine.check_national_std()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.STD)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.STANDARD_DEVIATION
+    )
     self.assertLen(outcome.analysis_artifacts, 4)
     kpi_artifact = next(
         artifact
@@ -4173,7 +4869,9 @@ class EDAEngineTest(
     self._mock_eda_engine_property("national_all_reach_scaled_da", None)
     self._mock_eda_engine_property("national_all_freq_da", None)
     outcome = engine.check_national_std()
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.STD)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.STANDARD_DEVIATION
+    )
     self.assertLen(outcome.findings, 1)
     self.assertEqual(outcome.findings[0].severity, eda_outcome.EDASeverity.INFO)
     self.assertIn(
@@ -4204,7 +4902,9 @@ class EDAEngineTest(
     self._mock_eda_engine_property("national_all_freq_da", None)
 
     outcome = engine.check_national_std()
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.STD)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.STANDARD_DEVIATION
+    )
     self.assertLen(outcome.findings, 1)
     self.assertEqual(
         outcome.findings[0].severity, eda_outcome.EDASeverity.ATTENTION
@@ -4318,7 +5018,9 @@ class EDAEngineTest(
       self._mock_eda_engine_property("national_all_freq_da", None)
 
     outcome = engine.check_national_std()
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.STD)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.STANDARD_DEVIATION
+    )
     self.assertLen(outcome.findings, 1)
     self.assertEqual(
         outcome.findings[0].severity, eda_outcome.EDASeverity.ATTENTION
@@ -4347,7 +5049,9 @@ class EDAEngineTest(
     self._mock_eda_engine_property("national_all_reach_scaled_da", None)
     self._mock_eda_engine_property("national_all_freq_da", None)
     outcome = engine.check_national_std()
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.STD)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.STANDARD_DEVIATION
+    )
     self.assertLen(outcome.analysis_artifacts, 2)
     variables = [artifact.variable for artifact in outcome.analysis_artifacts]
     self.assertCountEqual(
@@ -4408,7 +5112,9 @@ class EDAEngineTest(
 
     outcome = engine.check_geo_vif()
 
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.VIF)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.MULTICOLLINEARITY
+    )
     self.assertLen(outcome.findings, 1)
     self.assertEqual(outcome.findings[0].severity, expected_severity)
     self.assertIn(expected_explanation, outcome.findings[0].explanation)
@@ -4425,7 +5131,9 @@ class EDAEngineTest(
 
     outcome = engine.check_geo_vif()
     self.assertIsInstance(outcome, eda_outcome.EDAOutcome)
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.VIF)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.MULTICOLLINEARITY
+    )
     self.assertLen(outcome.analysis_artifacts, 2)
 
     overall_artifact = next(
@@ -4456,7 +5164,9 @@ class EDAEngineTest(
 
     outcome = engine.check_geo_vif()
     self.assertIsInstance(outcome, eda_outcome.EDAOutcome)
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.VIF)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.MULTICOLLINEARITY
+    )
     self.assertLen(outcome.analysis_artifacts, 2)
 
     geo_artifact = next(
@@ -4493,7 +5203,9 @@ class EDAEngineTest(
     outcome = engine.check_geo_vif()
 
     self.assertIsInstance(outcome, eda_outcome.EDAOutcome)
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.VIF)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.MULTICOLLINEARITY
+    )
     self.assertLen(outcome.analysis_artifacts, 2)
 
     overall_artifact = next(
@@ -4525,7 +5237,9 @@ class EDAEngineTest(
     outcome = engine.check_geo_vif()
 
     self.assertIsInstance(outcome, eda_outcome.EDAOutcome)
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.VIF)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.MULTICOLLINEARITY
+    )
     self.assertLen(outcome.analysis_artifacts, 2)
 
     overall_artifact = next(
@@ -4635,7 +5349,9 @@ class EDAEngineTest(
 
     outcome = engine.check_national_vif()
     self.assertIsInstance(outcome, eda_outcome.EDAOutcome)
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.VIF)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.MULTICOLLINEARITY
+    )
     self.assertLen(outcome.analysis_artifacts, 1)
 
     national_artifact = outcome.analysis_artifacts[0]
@@ -4664,7 +5380,9 @@ class EDAEngineTest(
     outcome = engine.check_national_vif()
 
     self.assertIsInstance(outcome, eda_outcome.EDAOutcome)
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.VIF)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.MULTICOLLINEARITY
+    )
     self.assertLen(outcome.analysis_artifacts, 1)
 
     national_artifact = outcome.analysis_artifacts[0]
@@ -4685,7 +5403,9 @@ class EDAEngineTest(
     outcome = engine.check_national_vif()
 
     self.assertIsInstance(outcome, eda_outcome.EDAOutcome)
-    self.assertEqual(outcome.check_type, eda_outcome.EDACheckType.VIF)
+    self.assertEqual(
+        outcome.check_type, eda_outcome.EDACheckType.MULTICOLLINEARITY
+    )
     self.assertLen(outcome.analysis_artifacts, 1)
 
     national_artifact = outcome.analysis_artifacts[0]
@@ -4706,58 +5426,151 @@ class EDAEngineTest(
 
   @parameterized.named_parameters(
       dict(
+          testcase_name="national_model",
+          is_national=True,
+          expected_call="check_national_std",
+      ),
+      dict(
+          testcase_name="geo_model",
+          is_national=False,
+          expected_call="check_geo_std",
+      ),
+  )
+  def test_check_std_calls_correct_level(self, is_national, expected_call):
+    meridian = mock.Mock(spec=model.Meridian)
+    meridian.is_national = is_national
+    engine = eda_engine.EDAEngine(meridian)
+
+    mock_outcome = self._create_eda_outcome(
+        eda_outcome.EDACheckType.STANDARD_DEVIATION,
+        eda_outcome.EDASeverity.INFO,
+    )
+    mock_check = self.enter_context(
+        mock.patch.object(
+            engine, expected_call, autospec=True, return_value=mock_outcome
+        )
+    )
+    result = engine.check_std()
+    mock_check.assert_called_once()
+    self.assertEqual(result, mock_outcome)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="national_model",
+          is_national=True,
+          expected_call="check_national_vif",
+      ),
+      dict(
+          testcase_name="geo_model",
+          is_national=False,
+          expected_call="check_geo_vif",
+      ),
+  )
+  def test_check_vif_calls_correct_level(self, is_national, expected_call):
+    meridian = mock.Mock(spec=model.Meridian)
+    meridian.is_national = is_national
+    engine = eda_engine.EDAEngine(meridian)
+
+    mock_outcome = self._create_eda_outcome(
+        eda_outcome.EDACheckType.MULTICOLLINEARITY,
+        eda_outcome.EDASeverity.INFO,
+    )
+    mock_check = self.enter_context(
+        mock.patch.object(
+            engine, expected_call, autospec=True, return_value=mock_outcome
+        )
+    )
+    result = engine.check_vif()
+    mock_check.assert_called_once()
+    self.assertEqual(result, mock_outcome)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="national_model",
+          is_national=True,
+          expected_call="check_national_pairwise_corr",
+      ),
+      dict(
+          testcase_name="geo_model",
+          is_national=False,
+          expected_call="check_geo_pairwise_corr",
+      ),
+  )
+  def test_check_pairwise_corr_calls_correct_level(
+      self, is_national, expected_call
+  ):
+    meridian = mock.Mock(spec=model.Meridian)
+    meridian.is_national = is_national
+    engine = eda_engine.EDAEngine(meridian)
+
+    mock_outcome = self._create_eda_outcome(
+        eda_outcome.EDACheckType.PAIRWISE_CORRELATION,
+        eda_outcome.EDASeverity.INFO,
+    )
+    mock_check = self.enter_context(
+        mock.patch.object(
+            engine, expected_call, autospec=True, return_value=mock_outcome
+        )
+    )
+    result = engine.check_pairwise_corr()
+    mock_check.assert_called_once()
+    self.assertEqual(result, mock_outcome)
+
+  @parameterized.named_parameters(
+      dict(
           testcase_name="has_variability",
-          population_scaled_stdev=1.0,
+          kpi_scaled_stdev=1.0,
           expected_result=True,
       ),
       dict(
           testcase_name="no_variability",
-          population_scaled_stdev=0.0,
+          kpi_scaled_stdev=0.0,
           expected_result=False,
       ),
       dict(
           testcase_name="below_threshold",
-          population_scaled_stdev=eda_engine._STD_THRESHOLD / 2,
+          kpi_scaled_stdev=eda_engine._STD_THRESHOLD / 2,
           expected_result=False,
       ),
       dict(
           testcase_name="at_threshold",
-          population_scaled_stdev=eda_engine._STD_THRESHOLD,
+          kpi_scaled_stdev=eda_engine._STD_THRESHOLD,
           expected_result=True,
       ),
   )
-  def test_kpi_has_variability(self, population_scaled_stdev, expected_result):
+  def test_kpi_has_variability(self, kpi_scaled_stdev, expected_result):
     meridian = mock.Mock(spec=model.Meridian)
-    meridian.kpi_transformer.population_scaled_stdev = population_scaled_stdev
     engine = eda_engine.EDAEngine(meridian)
+    mock_kpi_scaled_da = mock.Mock()
+    mock_kpi_scaled_da.std.return_value = xr.DataArray(kpi_scaled_stdev)
+    self._mock_eda_engine_property("kpi_scaled_da", mock_kpi_scaled_da)
     self.assertEqual(engine.kpi_has_variability, expected_result)
 
   @parameterized.named_parameters(
       dict(
           testcase_name="geo",
           is_national=False,
-          expected_kpi_name="population_scaled_kpi",
+          kpi_data=np.ones((5, 200)),
       ),
       dict(
           testcase_name="national",
           is_national=True,
-          expected_kpi_name="kpi",
+          kpi_data=np.ones((1, 200)),
       ),
   )
   def test_check_overall_kpi_invariability_no_variability(
-      self, is_national, expected_kpi_name
+      self, is_national, kpi_data
   ):
     meridian = mock.Mock(spec=model.Meridian)
     meridian.is_national = is_national
     meridian.input_data.kpi = self.input_data_with_media_only.kpi
-    mock_kpi_transformer = mock.Mock()
-    mock_kpi_transformer.population_scaled_stdev = 0.0
-    mock_kpi_transformer.population_scaled_mean = 100.0
-    mock_kpi_transformer.population_scaled_kpi = backend.zeros(
-        (self._N_GEOS, self._N_TIMES), dtype=backend.float32
-    )
-    meridian.kpi_transformer = mock_kpi_transformer
     engine = eda_engine.EDAEngine(meridian)
+
+    mock_kpi_scaled_da = _create_data_array_with_var_dim(
+        kpi_data,
+        name=constants.KPI_SCALED,
+    )
+    self._mock_eda_engine_property("kpi_scaled_da", mock_kpi_scaled_da)
 
     outcome = engine.check_overall_kpi_invariability()
 
@@ -4770,7 +5583,7 @@ class EDAEngineTest(
     )
     expected_geo_text = "geos and " if not is_national else ""
     self.assertIn(
-        f"`{expected_kpi_name}` is constant across all"
+        f"`{constants.KPI_SCALED}` is constant across all"
         f" {expected_geo_text}times",
         outcome.findings[0].explanation,
     )
@@ -4778,38 +5591,37 @@ class EDAEngineTest(
     artifact = outcome.analysis_artifacts[0]
     self.assertIsInstance(artifact, eda_outcome.KpiInvariabilityArtifact)
     self.assertEqual(artifact.level, eda_outcome.AnalysisLevel.OVERALL)
-    self.assertEqual(artifact.population_scaled_stdev, 0.0)
-    self.assertEqual(artifact.population_scaled_mean, 100.0)
+    self.assertAlmostEqual(artifact.kpi_stdev, 0.0)
     test_utils.assert_allclose(
-        artifact.population_scaled_kpi_da.values,
-        backend.to_tensor(mock_kpi_transformer.population_scaled_kpi),
+        artifact.kpi_da.values,
+        kpi_data,
     )
 
   @parameterized.named_parameters(
       dict(
           testcase_name="geo",
           is_national=False,
+          kpi_data=np.arange(5 * 200).reshape(5, 200),
       ),
       dict(
           testcase_name="national",
           is_national=True,
+          kpi_data=np.arange(1 * 200).reshape(1, 200),
       ),
   )
-  def test_check_overall_kpi_invariability_has_variability(self, is_national):
+  def test_check_overall_kpi_invariability_has_variability(
+      self, is_national, kpi_data
+  ):
     meridian = mock.Mock(spec=model.Meridian)
     meridian.is_national = is_national
     meridian.input_data.kpi = self.input_data_with_media_only.kpi
-    mock_kpi_transformer = mock.Mock()
-    mock_kpi_transformer.population_scaled_stdev = 1.0
-    mock_kpi_transformer.population_scaled_mean = 100.0
-    mock_kpi_transformer.population_scaled_kpi = backend.to_tensor(
-        np.arange(self._N_GEOS * self._N_TIMES).reshape(
-            self._N_GEOS, self._N_TIMES
-        ),
-        dtype=backend.float32,
-    )
-    meridian.kpi_transformer = mock_kpi_transformer
     engine = eda_engine.EDAEngine(meridian)
+
+    mock_kpi_scaled_da = _create_data_array_with_var_dim(
+        kpi_data,
+        name=constants.KPI_SCALED,
+    )
+    self._mock_eda_engine_property("kpi_scaled_da", mock_kpi_scaled_da)
 
     outcome = engine.check_overall_kpi_invariability()
 
@@ -4819,9 +5631,8 @@ class EDAEngineTest(
     self.assertLen(outcome.findings, 1)
     self.assertEqual(outcome.findings[0].severity, eda_outcome.EDASeverity.INFO)
     expected_geo_text = "geos and " if not is_national else ""
-    expected_kpi_name = "kpi" if is_national else "population_scaled_kpi"
     self.assertIn(
-        f"The {expected_kpi_name} has variability across"
+        f"The {constants.KPI_SCALED} has variability across"
         f" {expected_geo_text}times",
         outcome.findings[0].explanation,
     )
@@ -4829,11 +5640,158 @@ class EDAEngineTest(
     artifact = outcome.analysis_artifacts[0]
     self.assertIsInstance(artifact, eda_outcome.KpiInvariabilityArtifact)
     self.assertEqual(artifact.level, eda_outcome.AnalysisLevel.OVERALL)
-    self.assertEqual(artifact.population_scaled_stdev, 1.0)
-    self.assertEqual(artifact.population_scaled_mean, 100.0)
+    self.assertGreater(artifact.kpi_stdev, eda_engine._STD_THRESHOLD)
     test_utils.assert_allclose(
-        artifact.population_scaled_kpi_da.values,
-        backend.to_tensor(mock_kpi_transformer.population_scaled_kpi),
+        artifact.kpi_da.values,
+        kpi_data,
+    )
+
+  def test_run_all_critical_checks_all_pass(self):
+    meridian = model.Meridian(self.input_data_with_media_and_rf)
+    engine = eda_engine.EDAEngine(meridian)
+
+    mock_results = {
+        "check_overall_kpi_invariability": self._create_eda_outcome(
+            eda_outcome.EDACheckType.KPI_INVARIABILITY,
+            eda_outcome.EDASeverity.INFO,
+        ),
+        "check_vif": self._create_eda_outcome(
+            eda_outcome.EDACheckType.MULTICOLLINEARITY,
+            eda_outcome.EDASeverity.INFO,
+        ),
+        "check_pairwise_corr": self._create_eda_outcome(
+            eda_outcome.EDACheckType.PAIRWISE_CORRELATION,
+            eda_outcome.EDASeverity.INFO,
+        ),
+    }
+    self._mock_critical_checks(mock_results)
+
+    outcomes = engine.run_all_critical_checks()
+
+    self.assertLen(outcomes, 3)
+    for outcome in outcomes:
+      self.assertLen(outcome.findings, 1)
+      self.assertEqual(
+          outcome.findings[0].severity, eda_outcome.EDASeverity.INFO
+      )
+
+  def test_run_all_critical_checks_with_non_info_findings(self):
+    meridian = model.Meridian(self.input_data_with_media_and_rf)
+    engine = eda_engine.EDAEngine(meridian)
+
+    mock_results = {
+        "check_overall_kpi_invariability": self._create_eda_outcome(
+            eda_outcome.EDACheckType.KPI_INVARIABILITY,
+            eda_outcome.EDASeverity.ERROR,
+        ),
+        "check_vif": self._create_eda_outcome(
+            eda_outcome.EDACheckType.MULTICOLLINEARITY,
+            eda_outcome.EDASeverity.ATTENTION,
+        ),
+        "check_pairwise_corr": self._create_eda_outcome(
+            eda_outcome.EDACheckType.PAIRWISE_CORRELATION,
+            eda_outcome.EDASeverity.INFO,
+        ),
+    }
+    self._mock_critical_checks(mock_results)
+
+    outcomes = engine.run_all_critical_checks()
+
+    self.assertLen(outcomes, 3)
+    expected_severities = [
+        eda_outcome.EDASeverity.ERROR,
+        eda_outcome.EDASeverity.ATTENTION,
+        eda_outcome.EDASeverity.INFO,
+    ]
+    for i, outcome in enumerate(outcomes):
+      self.assertLen(outcome.findings, 1)
+      self.assertEqual(outcome.findings[0].severity, expected_severities[i])
+
+  def test_run_all_critical_checks_with_exception(self):
+    meridian = model.Meridian(self.input_data_with_media_and_rf)
+    engine = eda_engine.EDAEngine(meridian)
+
+    mock_results = {
+        "check_overall_kpi_invariability": self._create_eda_outcome(
+            eda_outcome.EDACheckType.KPI_INVARIABILITY,
+            eda_outcome.EDASeverity.INFO,
+        ),
+        "check_vif": ValueError("Test Error"),
+        "check_pairwise_corr": TypeError("Another Error"),
+    }
+    self._mock_critical_checks(mock_results)
+
+    outcomes = engine.run_all_critical_checks()
+
+    self.assertLen(outcomes, 3)
+
+    # Check check_overall_kpi_invariability
+    self.assertEqual(
+        outcomes[0].check_type, eda_outcome.EDACheckType.KPI_INVARIABILITY
+    )
+    self.assertLen(outcomes[0].findings, 1)
+    self.assertEqual(
+        outcomes[0].findings[0].severity, eda_outcome.EDASeverity.INFO
+    )
+
+    # Check check_vif (should catch ValueError)
+    self.assertEqual(
+        outcomes[1].check_type, eda_outcome.EDACheckType.MULTICOLLINEARITY
+    )
+    self.assertLen(outcomes[1].findings, 1)
+    self.assertEqual(
+        outcomes[1].findings[0].severity, eda_outcome.EDASeverity.ERROR
+    )
+    self.assertIn(
+        "An error occurred during check check_vif: Test Error",
+        outcomes[1].findings[0].explanation,
+    )
+
+    # Check check_pairwise_corr (should catch TypeError)
+    self.assertEqual(
+        outcomes[2].check_type, eda_outcome.EDACheckType.PAIRWISE_CORRELATION
+    )
+    self.assertLen(outcomes[2].findings, 1)
+    self.assertEqual(
+        outcomes[2].findings[0].severity, eda_outcome.EDASeverity.ERROR
+    )
+    self.assertIn(
+        "An error occurred during check check_pairwise_corr: Another Error",
+        outcomes[2].findings[0].explanation,
+    )
+
+  def test_stack_variables(self):
+    media_data = np.array(
+        [[0.0, 1.0, 2.0], [10.0, 11.0, 12.0], [20.0, 21.0, 22.0]],
+        dtype="float32",
+    )
+    rf_data = np.array(
+        [[100.0, 101.0], [110.0, 111.0], [120.0, 121.0]], dtype="float32"
+    )
+    media_ds = _create_dataset_with_var_dim(
+        media_data, var_name="national_media_spend"
+    )
+    rf_ds = _create_dataset_with_var_dim(rf_data, var_name="national_rf_spend")
+    ds = xr.merge([media_ds, rf_ds])
+    xr.testing.assert_equal(
+        eda_engine.stack_variables(ds),
+        xr.DataArray(
+            data=np.concatenate([media_data, rf_data], axis=1),
+            dims=[constants.TIME, eda_constants.VARIABLE],
+            coords={
+                constants.TIME: pd.to_datetime(
+                    ["2023-01-01", "2023-01-08", "2023-01-15"]
+                ),
+                eda_constants.VARIABLE: [
+                    "national_media_spend_1",
+                    "national_media_spend_2",
+                    "national_media_spend_3",
+                    "national_rf_spend_1",
+                    "national_rf_spend_2",
+                ],
+            },
+            name=None,
+        ),
     )
 
 

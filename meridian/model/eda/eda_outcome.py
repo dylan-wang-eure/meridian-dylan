@@ -67,8 +67,11 @@ class AnalysisLevel(enum.Enum):
   """Enumeration for the level of an analysis.
 
   Attributes:
-    OVERALL: Computed across all geos and time.
+    OVERALL: Computed across all geos and time. When the analysis is performed
+      on national data, this level is equivalent to the NATIONAL level.
     NATIONAL: Computed across time for data aggregated to the national level.
+      When the analysis is performed on national data, this level is equivalent
+      to the OVERALL level.
     GEO: Computed across time, for each geo.
   """
 
@@ -141,24 +144,22 @@ class KpiInvariabilityArtifact(AnalysisArtifact):
   """Encapsulates artifacts from a KPI invariability analysis.
 
   Attributes:
-    population_scaled_kpi_da: DataArray of the population-scaled KPI.
-    population_scaled_mean: The mean of the population-scaled KPI.
-    population_scaled_stdev: The standard deviation of the population-scaled
-      KPI.
+    kpi_da: DataArray of the KPI that is examined for variability.
+    kpi_stdev: The standard deviation of the KPI, which is used to test the KPI
+      invariability.
   """
 
-  population_scaled_kpi_da: xr.DataArray
-  population_scaled_mean: float
-  population_scaled_stdev: float
+  kpi_da: xr.DataArray
+  kpi_stdev: xr.DataArray
 
 
 @enum.unique
 class EDACheckType(enum.Enum):
   """Enumeration for the type of an EDA check."""
 
-  PAIRWISE_CORR = enum.auto()
-  STD = enum.auto()
-  VIF = enum.auto()
+  PAIRWISE_CORRELATION = enum.auto()
+  STANDARD_DEVIATION = enum.auto()
+  MULTICOLLINEARITY = enum.auto()
   KPI_INVARIABILITY = enum.auto()
 
 
@@ -181,3 +182,19 @@ class EDAOutcome(typing.Generic[ArtifactType]):
   check_type: EDACheckType
   findings: list[EDAFinding]
   analysis_artifacts: list[ArtifactType]
+
+  @property
+  def get_geo_artifact(self) -> ArtifactType | None:
+    """Returns the geo-level analysis artifact."""
+    for artifact in self.analysis_artifacts:
+      if artifact.level == AnalysisLevel.GEO:
+        return artifact
+    return None
+
+  @property
+  def get_national_artifact(self) -> ArtifactType | None:
+    """Returns the national-level analysis artifact."""
+    for artifact in self.analysis_artifacts:
+      if artifact.level == AnalysisLevel.NATIONAL:
+        return artifact
+    return None
